@@ -1,0 +1,1 @@
+You will find below the text from an article. I want you to summarise this article in great detail. If the article was in French, I want you to generate the summary in English. Please just output the summary, nothing else.
