@@ -4,7 +4,6 @@ import aiofiles
 from .base import NoteProcessor
 from ..common.frontmatter import read_frontmatter_from_file, set_frontmatter_in_file, read_text_from_content
 from prompts.prompts import get_prompt
-from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 
@@ -17,7 +16,6 @@ class TranscriptClassifier(NoteProcessor):
 
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
-        self.ai_model = AI("haiku3.5")  # Using smaller model for classification
         self.prompt_classify = get_prompt("classify_transcript")
         
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
@@ -32,7 +30,7 @@ class TranscriptClassifier(NoteProcessor):
                 text=self.prompt_classify + text
             )]
         )
-        return self.ai_model.message(message).content
+        return self.tiny_ai_model.message(message).content
         
     async def process_file(self, filename: str) -> None:
         """Process a transcript file."""
@@ -58,4 +56,8 @@ class TranscriptClassifier(NoteProcessor):
         
         set_frontmatter_in_file(file_path, frontmatter)
         logger.info("Updated classification for: %s", filename)
+
+
+
+
 

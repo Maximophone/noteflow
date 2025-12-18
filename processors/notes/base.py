@@ -8,6 +8,7 @@ from ai_core import AI
 import os
 import asyncio
 from config.logging_config import setup_logger
+from config.services_config import BIG_MODEL, SMALL_MODEL
 
 logger = setup_logger(__name__)
 
@@ -19,8 +20,8 @@ class NoteProcessor(ABC):
     def __init__(self, input_dir: Path):
         self.input_dir = input_dir
         self.files_in_process = set()
-        self.ai_model = AI("gemini2.5pro")
-        self.tiny_ai_model = AI("gemini2.5flash")
+        self.ai_model = AI(BIG_MODEL)
+        self.tiny_ai_model = AI(SMALL_MODEL)
     
     def _should_process(self, filename: str) -> bool:
         """Base implementation of should_process with pipeline logic."""
@@ -117,4 +118,8 @@ class NoteProcessor(ABC):
             finally:
                 self.files_in_process.remove(filename)
         logger.debug(f"Finished processing all eligible files for stage {self.__class__.stage_name}")
+
+
+
+
 

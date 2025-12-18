@@ -15,6 +15,7 @@ import re
 import os
 import asyncio
 from config.logging_config import setup_logger
+from config.services_config import BIG_MODEL
 
 from prompts.prompts import get_prompt
 
@@ -48,8 +49,8 @@ class AudioTranscriber:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
 
-        # Add small AI model for title generation
-        self.ai_model = AI("gemini2.5pro")
+        # Add AI model for title generation
+        self.ai_model = AI(BIG_MODEL)
         self.prompt_title = get_prompt("transcript_title")
 
     def generate_title(self, text: str) -> str:
@@ -199,4 +200,8 @@ class AudioTranscriber:
             tasks.append(task)
         if tasks:
             await asyncio.gather(*tasks)
+
+
+
+
 
