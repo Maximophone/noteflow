@@ -23,7 +23,8 @@ class NotionUploadProcessor(NoteProcessor):
         self.database_url = database_url
 
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
-        if "noupload" in frontmatter.get("source_tags", []):
+        # Only upload to Notion if "upload" flag is explicitly present
+        if "upload" not in frontmatter.get("source_tags", []):
             return False
         if frontmatter.get("category") != "meeting":
             return False
@@ -161,4 +162,8 @@ class NotionUploadProcessor(NoteProcessor):
         except Exception as e:
             logger.error(f"Error resetting stage '{self.stage_name}' for {filename}: {e}")
             logger.error(traceback.format_exc())
+
+
+
+
 
