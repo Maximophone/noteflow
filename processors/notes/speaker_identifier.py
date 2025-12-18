@@ -10,7 +10,6 @@ import asyncio
 
 from .base import NoteProcessor
 from ..common.frontmatter import read_frontmatter_from_file, parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
-from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.user_config import TARGET_DISCORD_USER_ID, USER_NAME, USER_ORGANIZATION
@@ -100,35 +99,16 @@ class SpeakerIdentifier(NoteProcessor):
                 text=prompt
             )]
         )
-        response = await asyncio.to_thread(self.ai_model.message, message)
-        fallback = False
-        fallback_message = ""
-        response_content = ""
-        response_content = ""
-        fallback = False
-        fallback_message = ""
-        if response.content is None:
-            # Try fallback model up to max_retries times
-            # Often this happens because the reasoning model reaches its max tokens during its reasoning.
-            max_retries = SPEAKER_IDENTIFICATION_MAX_RETRIES
-            fallback = True
-            fallback_message = "Used fallback model for speaker identification. "
-            logger.warning("Fallback to tiny model used for speaker identification.")
-            retry_count = 0
-            while retry_count < max_retries:
-                response = await asyncio.to_thread(self.tiny_ai_model.message, message)
-                if response.content is not None:
-                    response_content = response.content
-                    break
-                retry_count += 1
-                logger.warning(f"Fallback tiny model response was empty for speaker {speaker_label}. Retry {retry_count}/{max_retries}...")
-            else:
-                logger.error("Response from AI is empty after retries. Response error: %s", response.error)
-                response_content = f"PROBLEM WITH SPEAKER IDENTIFICATION FOR SPEAKER {speaker_label}."
-        else:
-            response_content = response.content
-
-        return fallback_message + response_content.strip()
+        
+        max_retries = SPEAKER_IDENTIFICATION_MAX_RETRIES
+        for retry_count in range(max_retries):
+            response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+            if response.content is not None:
+                return response.content.strip()
+            logger.warning(f"Empty response for speaker {speaker_label}. Retry {retry_count + 1}/{max_retries}...")
+        
+        logger.error("Response from AI is empty after retries. Response error: %s", response.error)
+        return f"PROBLEM WITH SPEAKER IDENTIFICATION FOR SPEAKER {speaker_label}."
 
     async def consolidate_answer(self, text: str) -> str:
         """Extract just the name from the verbose AI response."""
@@ -541,4 +521,8 @@ class SpeakerIdentifier(NoteProcessor):
 
         except Exception as e:
             logger.error(f"Error resetting stage '{self.stage_name}' for {filename}: {e}", exc_info=True)
+
+
+
+
 
