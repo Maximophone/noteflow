@@ -464,6 +464,8 @@ class SpeakerIdentifier(NoteProcessor):
             frontmatter: Parsed frontmatter dict
             content: Full file content (including validation section)
         """
+        from ..common.obsidian_form import validate_wikilink_field, insert_error_in_section
+        
         logger.info("Checking validation section for: %s", filename)
         
         # Parse the validation section
@@ -478,6 +480,45 @@ class SpeakerIdentifier(NoteProcessor):
         if not validation_data['finished']:
             logger.info("Validation not complete yet for: %s. Will retry later.", filename)
             raise ResultsNotReadyError(f"User has not checked 'Finished' in: {filename}")
+        
+        # Validate the input fields
+        errors = []
+        for speaker_id, value in validation_data['speakers'].items():
+            if value and value.strip():  # Only validate non-empty fields
+                error = validate_wikilink_field(value, speaker_id)
+                if error:
+                    errors.append(error)
+        
+        # If validation errors, update file with errors and notify user
+        if errors:
+            logger.warning("Validation errors in %s: %s", filename, [e.message for e in errors])
+            
+            # Insert error callout and uncheck Finished
+            updated_content = insert_error_in_section(
+                content, 
+                errors, 
+                self.VALIDATION_SECTION_START
+            )
+            
+            # Save the updated file
+            async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
+                await f.write(updated_content)
+            os.utime(self.input_dir / filename, None)
+            
+            # Send Discord notification about the errors
+            try:
+                error_summary = "; ".join(e.message for e in errors)
+                dm_text = (
+                    f"⚠️ **Validation errors in speaker identification**\n"
+                    f"File: `{filename}`\n"
+                    f"Errors: {error_summary}\n"
+                    f"Please fix and check Finished again."
+                )
+                await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
+            except Exception as e:
+                logger.warning("Failed to send Discord notification: %s", e)
+            
+            raise ResultsNotReadyError(f"Validation errors in: {filename}")
         
         logger.info("Validation complete for: %s. Processing results.", filename)
         
