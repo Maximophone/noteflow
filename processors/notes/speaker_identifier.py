@@ -1,19 +1,15 @@
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple, List
 import aiofiles
-import aiohttp
-import json
 import os
 import re
-import traceback
 import asyncio
 
 from .base import NoteProcessor
-from ..common.frontmatter import read_frontmatter_from_file, parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
+from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.user_config import TARGET_DISCORD_USER_ID, USER_NAME, USER_ORGANIZATION
-from config.services_config import SPEAKER_MATCHER_UI_URL
 from integrations.discord import DiscordIOCore
 from .transcript_classifier import TranscriptClassifier
 from prompts.prompts import get_prompt
@@ -32,7 +28,39 @@ class ResultsNotReadyError(Exception):
     pass
 
 class SpeakerIdentifier(NoteProcessor):
-    """Identifies speakers in transcripts using AI, initiates matching UI, and processes results."""
+    """Identifies speakers in transcripts using AI and inline Obsidian validation forms.
+    
+    This processor implements a multi-substage workflow:
+    
+    **Substage 1: AI Identification**
+        - Extracts unique speaker labels from the transcript (e.g., "Speaker A", "Speaker B")
+        - Uses AI to analyze speaking patterns and identify likely names
+        - Single-speaker transcripts are auto-assigned to the configured user
+    
+    **Substage 2: Validation Section Creation**
+        - Generates an inline validation form in the Obsidian file
+        - Shows AI-detected names with reasoning in collapsible details
+        - User fills in speaker names as wikilinks (e.g., [[John Smith]])
+        - Optional: User can flag quality issues with the transcript
+        - Sends Discord notification to prompt user action
+        - Raises ResultsNotReadyError to keep stage incomplete
+    
+    **Substage 3: Processing User Input**
+        - Parses the completed validation form
+        - Validates input format (wikilinks required)
+        - On validation error: unchecks Finished, shows error callout, notifies Discord
+        - On success: replaces speaker labels, generates summary, updates frontmatter
+    
+    **Frontmatter Fields**:
+        - speaker_validation_pending: True while waiting for user input
+        - final_speaker_mapping: Dict mapping speaker IDs to identified names
+        - transcript_quality_issues: True if user flagged quality problems
+        - speaker_identification_notes: User's optional notes
+    
+    **Validation Section Format** (see _generate_validation_section for details):
+        Uses HTML comments as parsing markers: <!-- input:speaker_a -->, etc.
+        User input is expected as Obsidian wikilinks: [[Person Name]] or [[Person|Alias]]
+    """
     stage_name = "speakers_identified"
     required_stage = TranscriptClassifier.stage_name
 
@@ -50,43 +78,253 @@ class SpeakerIdentifier(NoteProcessor):
             return False
         return True
 
+    # ===== Section Markers =====
+    # Form markers for pending validation (user needs to fill in)
+    FORM_START = "<!-- form:speaker_identification:start -->"
+    FORM_END = "<!-- form:speaker_identification:end -->"
+    # Summary markers for completed validation (form replaced with summary)
+    SUMMARY_START = "<!-- summary:speaker_identification:start -->"
+    SUMMARY_END = "<!-- summary:speaker_identification:end -->"
+    
+    def _generate_validation_section(self, speaker_mapping: Dict[str, Dict]) -> str:
+        """
+        Generate the inline data validation section for Obsidian.
+        
+        Args:
+            speaker_mapping: Dict mapping speaker labels to their AI-identified data
+                             e.g., {"Speaker A": {"name": "John", "reason": "..."}}
+        
+        Returns:
+            Markdown string for the validation section
+        """
+        lines = [
+            self.FORM_START,
+            "",
+            "> [!info] Data validation section — Fill in the fields below and check \"Finished\" when done",
+            "",
+            "# Speaker Identification",
+            "",
+        ]
+        
+        # Sort speakers by label for consistent ordering
+        sorted_speakers = sorted(speaker_mapping.keys(), key=lambda x: x.replace("Speaker ", ""))
+        
+        for speaker_id in sorted_speakers:
+            data = speaker_mapping[speaker_id]
+            detected_name = data.get("name", "Unknown")
+            reason = data.get("reason", "No analysis available.")
+            label = speaker_id.replace("Speaker ", "").lower()
+            
+            lines.extend([
+                f"## {speaker_id}",
+                f"**Detected:** {detected_name}",
+                f"<details><summary>🔍 Reasoning</summary>",
+                "",
+                reason,
+                "",
+                "</details>",
+                "",
+                f"**Real answer:** <!-- input:speaker_{label} -->",
+                "",
+                "---",
+                "",
+            ])
+        
+        lines.extend([
+            "## Additional Notes",
+            "<!-- input:notes -->",
+            "",
+            "",
+            "---",
+            "",
+            "## Validation",
+            "- [ ] Transcript has quality issues (bad transcription, wrong diarization, etc.) <!-- input:quality_issues -->",
+            "- [ ] Finished <!-- input:finished -->",
+            "",
+            self.FORM_END,
+            "",
+        ])
+        
+        return "\n".join(lines)
+    
+    def _parse_validation_section(self, content: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse the validation section from file content.
+        
+        Returns:
+            Dict with keys:
+                - 'speakers': Dict mapping speaker labels to user-entered wikilinks
+                - 'notes': User's additional notes (may be multi-line)
+                - 'finished': Boolean indicating if the checkbox is checked
+            Returns None if validation section not found or malformed.
+        """
+        # Find form section (not summary - that means already processed)
+        start_marker = self.FORM_START
+        end_marker = self.FORM_END
+        
+        start_idx = content.find(start_marker)
+        end_idx = content.find(end_marker)
+        
+        if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
+            return None
+        
+        section = content[start_idx + len(start_marker):end_idx]
+        
+        result = {
+            'speakers': {},
+            'notes': '',
+            'quality_issues': False,
+            'finished': False
+        }
+        
+        # Parse speaker inputs: <!-- input:speaker_X --> followed by any text on same line
+        # Captures both wikilinks [[Name]] and plain text (which will be validated later)
+        speaker_pattern = r'<!-- input:speaker_([a-z]+) -->([^\n]*)'
+        for match in re.finditer(speaker_pattern, section):
+            speaker_key = f"Speaker {match.group(1).upper()}"
+            value = match.group(2).strip() if match.group(2) else ""
+            result['speakers'][speaker_key] = value
+        
+        # Parse additional notes: everything after <!-- input:notes --> until the next ---
+        notes_pattern = r'<!-- input:notes -->\s*(.*?)\s*---'
+        notes_match = re.search(notes_pattern, section, re.DOTALL)
+        if notes_match:
+            result['notes'] = notes_match.group(1).strip()
+        
+        # Parse quality issues checkbox
+        quality_pattern = r'\[(x|X)\]\s+Transcript has quality issues.*<!-- input:quality_issues -->'
+        result['quality_issues'] = bool(re.search(quality_pattern, section))
+        
+        # Parse finished checkbox: [x] or [X] before <!-- input:finished -->
+        finished_pattern = r'\[(x|X)\]\s+Finished\s+<!-- input:finished -->'
+        result['finished'] = bool(re.search(finished_pattern, section))
+        
+        return result
+    
+    def _extract_person_from_wikilink(self, wikilink: str) -> Tuple[str, str]:
+        """
+        Extract person name and ID from a wikilink.
+        
+        Args:
+            wikilink: e.g. "[[John Smith]]" or "[[John Smith|Johnny]]"
+        
+        Returns:
+            Tuple of (person_id, display_name)
+        """
+        if not wikilink:
+            return ("Unknown", "Unknown")
+        
+        # Remove [[ and ]]
+        inner = wikilink.strip()[2:-2] if wikilink.startswith("[[") and wikilink.endswith("]]") else wikilink
+        
+        if "|" in inner:
+            parts = inner.split("|", 1)
+            return (parts[0].strip(), parts[1].strip())
+        else:
+            return (inner.strip(), inner.strip())
+    
+    def _generate_speaker_summary(
+        self, 
+        final_mapping: Dict[str, Dict], 
+        notes: str,
+        unidentified_speakers: List[str],
+        has_quality_issues: bool = False
+    ) -> str:
+        """
+        Generate the compact summary to replace the validation section after completion.
+        
+        Args:
+            final_mapping: Dict mapping speaker labels to final speaker data
+            notes: User's additional notes
+            unidentified_speakers: List of speaker labels that were not filled in
+            has_quality_issues: Whether user flagged quality issues
+        
+        Returns:
+            Markdown string for the summary section
+        """
+        # Collect unique person links
+        person_links = []
+        for speaker_data in final_mapping.values():
+            person_id = speaker_data.get('person_id', '')
+            if person_id:
+                person_links.append(person_id)
+        
+        # Determine callout type and text based on issues
+        if has_quality_issues:
+            callout_type = "warning"
+            callout_text = "Speaker identification complete (quality issues flagged)"
+        elif unidentified_speakers:
+            callout_type = "warning"
+            callout_text = "Speaker identification complete (some speakers not identified)"
+        else:
+            callout_type = "success"
+            callout_text = "Speaker identification complete"
+        
+        lines = [
+            self.SUMMARY_START,
+            "",
+            f"> [!{callout_type}] {callout_text}",
+            "",
+        ]
+        
+        if person_links:
+            lines.extend([
+                f"**Speakers:** {', '.join(person_links)}",
+                "",
+            ])
+        
+        if unidentified_speakers:
+            lines.extend([
+                f"**Not identified:** {', '.join(unidentified_speakers)}",
+                "",
+            ])
+        
+        if has_quality_issues:
+            lines.extend([
+                "⚠️ **Quality issues flagged**",
+                "",
+            ])
+        
+        if notes:
+            lines.extend([
+                f"**Notes:** {notes}",
+                "",
+            ])
+        
+        lines.extend([
+            self.SUMMARY_END,
+            "",
+        ])
+        
+        return "\n".join(lines)
+    
+    def _remove_validation_section(self, content: str) -> str:
+        """Remove the form or summary section from content, preserving surrounding content."""
+        # Try form markers first, then summary markers
+        for start_marker, end_marker in [
+            (self.FORM_START, self.FORM_END),
+            (self.SUMMARY_START, self.SUMMARY_END),
+        ]:
+            start_idx = content.find(start_marker)
+            end_idx = content.find(end_marker)
+            
+            if start_idx != -1 and end_idx != -1:
+                # Find the end of the line containing the end marker
+                end_line_idx = content.find('\n', end_idx)
+                if end_line_idx == -1:
+                    end_line_idx = len(content)
+                else:
+                    end_line_idx += 1  # Include the newline
+                
+                return content[:start_idx] + content[end_line_idx:]
+        
+        # No section found
+        return content
+
     def _extract_unique_speakers(self, transcript: str) -> set:
         """Extract all unique speaker labels from the transcript."""
         speaker_lines = [line for line in transcript.split('\n') if line.startswith('Speaker ')]
         return set(line.split(':')[0].strip() for line in speaker_lines)
-    
-    def _parse_transcript_segments(self, transcript: str) -> list:
-        """Parse transcript into segments for the speaker resolution API."""
-        segments = []
-        lines = transcript.split('\n')
-        current_speaker = None
-        current_text_lines = []
-        
-        for line in lines:
-            if line.startswith('Speaker ') and ':' in line:
-                # Save previous speaker's text if any
-                if current_speaker and current_text_lines:
-                    segments.append({
-                        "speaker_id": current_speaker,
-                        "text": ' '.join(current_text_lines).strip()
-                    })
-                # Start new speaker
-                current_speaker = line.split(':')[0].strip()
-                # Check if there's text on the same line after colon
-                after_colon = line.split(':', 1)[1].strip() if ':' in line else ''
-                current_text_lines = [after_colon] if after_colon else []
-            elif current_speaker and line.strip():
-                # Continuation of current speaker's text
-                current_text_lines.append(line.strip())
-        
-        # Don't forget the last speaker
-        if current_speaker and current_text_lines:
-            segments.append({
-                "speaker_id": current_speaker,
-                "text": ' '.join(current_text_lines).strip()
-            })
-        
-        return segments
                  
     async def identify_speaker(self, transcript: str, speaker_label: str) -> str:
         """Use AI to identify a specific speaker from the transcript."""
@@ -128,7 +366,7 @@ class SpeakerIdentifier(NoteProcessor):
             return response.content.strip()
 
     async def process_file(self, filename: str) -> None:
-        """Process a transcript file through all substages: identify speakers, initiate matching, and process results."""
+        """Process a transcript file through all substages: identify speakers, create validation section, and process results."""
         logger.info("Processing file for speaker identification: %s", filename)
         
         content = await self.read_file(filename)
@@ -141,31 +379,16 @@ class SpeakerIdentifier(NoteProcessor):
             await self._handle_single_speaker(filename, frontmatter, transcript, list(unique_speakers)[0])
             return
         
-        # --- Substage 1: Speaker Identification (if not already done) ---
-        if 'identified_speakers' not in frontmatter:
-            await self._substage1_identify_speakers(filename, frontmatter, transcript)
-            # Reload frontmatter and transcript after modifications
-            content = await self.read_file(filename)
-            frontmatter = parse_frontmatter_from_content(content)
-            transcript = read_text_from_content(content)
+        # --- Check if validation section exists (substage 2 already done) ---
+        if frontmatter.get('speaker_validation_pending'):
+            # Validation section exists, try to process results
+            await self._substage3_process_results(filename, frontmatter, content)
         else:
-            logger.info("Speakers already identified for: %s", filename)
-        
-        # --- Substage 2: Initiate Matching UI & Send Discord Notification (if needed) ---
-        if 'speaker_matcher_task_id' not in frontmatter:
-            await self._substage2_initiate_matching(filename, frontmatter, transcript)
-            # Reload frontmatter and transcript after modifications
-            content = await self.read_file(filename)
-            frontmatter = parse_frontmatter_from_content(content)
-            transcript = read_text_from_content(content)
-        else:
-            logger.info("Speaker matching UI already initiated for: %s", filename)
-        
-        # --- Substage 3: Poll for Results & Process Them (if needed) ---
-        if 'final_speaker_mapping' not in frontmatter:
-            await self._substage3_process_results(filename, frontmatter, transcript)
-        else:
-            logger.info("Speaker matching results already processed for: %s", filename)
+            # Need to run substage 1 (AI identification) and substage 2 (create validation section)
+            speaker_mapping = await self._substage1_identify_speakers(filename, frontmatter, transcript)
+            await self._substage2_create_validation_section(filename, frontmatter, transcript, speaker_mapping)
+            # Raise to prevent base class from marking stage complete - we're waiting for user input
+            raise ResultsNotReadyError(f"Validation section created, waiting for user input in: {filename}")
 
     async def _handle_single_speaker(self, filename: str, frontmatter: Dict, transcript: str, speaker_label: str) -> None:
         """Handle transcripts with a single speaker by automatically assigning user's info."""
@@ -196,8 +419,13 @@ class SpeakerIdentifier(NoteProcessor):
         
         logger.info("Completed automatic speaker identification for single-speaker file: %s", filename)
             
-    async def _substage1_identify_speakers(self, filename: str, frontmatter: Dict, transcript: str) -> None:
-        """Substage 1: Identify speakers using AI and save to frontmatter."""
+    async def _substage1_identify_speakers(self, filename: str, frontmatter: Dict, transcript: str) -> Dict[str, Dict]:
+        """Substage 1: Identify speakers using AI and return the mapping.
+        
+        Returns:
+            Dict mapping speaker labels to AI-identified data, e.g.:
+            {"Speaker A": {"name": "John", "reason": "Based on..."}}
+        """
         logger.info("Identifying speakers in: %s", filename)
         unique_speakers = self._extract_unique_speakers(transcript)
         
@@ -215,225 +443,188 @@ class SpeakerIdentifier(NoteProcessor):
                 "reason": identified_name_verbose.strip()
             }
         
-        # Save the identified speakers to frontmatter immediately
-        frontmatter['identified_speakers'] = speaker_mapping
-        temp_content = frontmatter_to_text(frontmatter) + transcript
-        async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
-            await f.write(temp_content)
-        os.utime(self.input_dir / filename, None)
-        logger.info("Saved identified speakers to frontmatter for: %s", filename)
+        logger.info("Identified speakers for: %s", filename)
+        return speaker_mapping
     
-    async def _substage2_initiate_matching(self, filename: str, frontmatter: Dict, transcript: str) -> None:
-        """Substage 2: Initiate matching UI service and send Discord notification."""
-        speaker_mapping = frontmatter.get('identified_speakers', {})
+    async def _substage2_create_validation_section(
+        self, 
+        filename: str, 
+        frontmatter: Dict, 
+        transcript: str, 
+        speaker_mapping: Dict[str, Dict]
+    ) -> None:
+        """Substage 2: Create inline validation section and send Discord notification.
         
-        # Prepare payload for UI service
-        speakers_payload = []
-        for speaker_id, data in speaker_mapping.items():
-            speaker_info = {
-                "speaker_id": speaker_id,
-                "description": data.get("reason", "No description available.")
-            }
-            # Only include extracted_name if it's not "unknown"
-            if data.get("name") and data["name"].lower() != "unknown":
-                speaker_info["extracted_name"] = data["name"]
-            speakers_payload.append(speaker_info)
+        This inserts a data validation section at the top of the transcript content
+        (after frontmatter) where the user can review AI guesses and enter the real
+        speaker names as wikilinks.
+        """
+        logger.info("Creating validation section for: %s", filename)
         
-        meeting_id = filename
-        meeting_context = f"Transcript from meeting: {filename}"
+        # Generate the validation section markdown
+        validation_section = self._generate_validation_section(speaker_mapping)
         
-        # Parse transcript into segments for the API
-        transcript_segments = self._parse_transcript_segments(transcript)
+        # Mark as pending in frontmatter
+        frontmatter['speaker_validation_pending'] = True
         
-        payload = {
-            "meeting_id": meeting_id,
-            "meeting_context": meeting_context,
-            "speakers": speakers_payload,
-            "transcript": transcript_segments
-        }
+        # Combine: frontmatter + validation section + transcript
+        full_content = frontmatter_to_text(frontmatter) + validation_section + transcript
         
-        # Call UI service
-        try:
-            logger.info("Calling speaker matcher UI service for: %s", filename)
-            async with aiohttp.ClientSession() as session:
-                async with session.post(SPEAKER_MATCHER_UI_URL, json=payload) as response:
-                    response.raise_for_status()
-                    response_data = await response.json()
-                    
-                    ui_url = response_data.get("ui_url")
-                    results_url = response_data.get("results_url")
-                    task_id = response_data.get("task_id")
-                    
-                    if not (ui_url and results_url and task_id):
-                        error_msg = f"Incomplete response from UI service: {response_data}"
-                        logger.error(error_msg)
-                        raise SpeakerIdentificationError(error_msg)
-                        
-                    logger.info("Successfully called UI service for: %s", filename)
-        except (aiohttp.ClientError, json.JSONDecodeError) as e:
-            error_msg = f"Error calling UI service: {str(e)}"
-            logger.error(error_msg)
-            logger.info(f"Payload: {payload}")
-            raise SpeakerIdentificationError(error_msg) from e
+        # Save the file
+        async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
+            await f.write(full_content)
+        os.utime(self.input_dir / filename, None)
         
         # Send Discord notification
         try:
             logger.info("Sending Discord notification for: %s", filename)
-            dm_text = f"Please help identify speakers for the meeting '{meeting_id}'.\n" \
-                      f"Click here to start: {ui_url}"
+            file_path = self.input_dir / filename
+            dm_text = (
+                f"📝 **Speaker identification needed**\n"
+                f"Please review and fill in the speaker names for: `{filename}`\n"
+                f"Open the file in Obsidian and complete the validation section."
+            )
             success = await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
             
             if not success:
-                error_msg = f"Failed to send Discord DM for: {filename}"
-                logger.error(error_msg)
-                raise SpeakerIdentificationError(error_msg)
-                
-            logger.info("Successfully sent Discord notification for: %s", filename)
+                logger.warning("Failed to send Discord DM for: %s", filename)
+            else:
+                logger.info("Successfully sent Discord notification for: %s", filename)
         except Exception as e:
-            error_msg = f"Error sending Discord notification: {str(e)}"
-            logger.error(error_msg)
-            raise SpeakerIdentificationError(error_msg) from e
+            logger.warning("Error sending Discord notification for %s: %s", filename, str(e))
+            # Don't fail the whole process just because Discord notification failed
         
-        # Both API call and Discord notification succeeded, update frontmatter
-        frontmatter['speaker_matcher_ui_url'] = ui_url
-        frontmatter['speaker_matcher_results_url'] = results_url
-        frontmatter['speaker_matcher_task_id'] = task_id
+        logger.info("Created validation section for: %s", filename)
+
+    async def _substage3_process_results(self, filename: str, frontmatter: Dict, content: str) -> None:
+        """Substage 3: Parse validation section and process user input.
         
-        # Save updated file
-        full_content = frontmatter_to_text(frontmatter) + transcript
-        async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
-            await f.write(full_content)
-        os.utime(self.input_dir / filename, None)
-        logger.info("Completed speaker matching UI initiation for: %s", filename)
-    
-    async def _clear_matching_session_fields_and_save(self, filename: str, frontmatter: Dict, transcript: str) -> None:
-        """Clear session-specific matching fields and persist the file."""
-        for key in (
-            'speaker_matcher_ui_url',
-            'speaker_matcher_results_url',
-            'speaker_matcher_task_id',
-        ):
-            if key in frontmatter:
-                del frontmatter[key]
-
-        full_content = frontmatter_to_text(frontmatter) + transcript
-        async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
-            await f.write(full_content)
-        os.utime(self.input_dir / filename, None)
-        logger.info("Cleared speaker matcher session fields for: %s", filename)
-
-    async def _substage3_process_results(self, filename: str, frontmatter: Dict, transcript: str) -> None:
-        """Substage 3: Poll for matching results and process when ready."""
-        results_url = frontmatter.get('speaker_matcher_results_url')
-        if not results_url:
-            error_msg = f"Missing results URL in frontmatter for: {filename}"
+        Args:
+            filename: Name of the file to process
+            frontmatter: Parsed frontmatter dict
+            content: Full file content (including validation section)
+        """
+        from ..common.obsidian_form import validate_wikilink_field, insert_error_in_section
+        
+        logger.info("Checking validation section for: %s", filename)
+        
+        # Parse the validation section
+        validation_data = self._parse_validation_section(content)
+        
+        if validation_data is None:
+            error_msg = f"Could not find or parse validation section in: {filename}"
             logger.error(error_msg)
             raise SpeakerIdentificationError(error_msg)
         
-        logger.info("Polling for speaker matching results for: %s", filename)
-
-        timeout = aiohttp.ClientTimeout(total=15, connect=5)
-        max_attempts = 3
-        backoff_seconds = 1.0
-        results = None
-
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                for attempt in range(max_attempts):
-                    try:
-                        async with session.get(results_url) as response:
-                            response.raise_for_status()
-                            response_data = await response.json()
-
-                            status = response_data.get("status")
-
-                            if status == "PENDING":
-                                logger.info("Results not ready yet for: %s. Will retry later.", filename)
-                                raise ResultsNotReadyError(
-                                    f"Results not ready for task: {response_data.get('task_id')}"
-                                )
-
-                            if status != "COMPLETE":
-                                error_msg = f"Unexpected status from results endpoint: {status}"
-                                logger.error(error_msg)
-                                raise SpeakerIdentificationError(error_msg)
-
-                            results = response_data.get("results", {})
-                            if not results:
-                                error_msg = f"Empty results received for: {filename}"
-                                logger.error(error_msg)
-                                raise SpeakerIdentificationError(error_msg)
-
-                            logger.info("Successfully received matching results for: %s", filename)
-                            logger.info("Speaker mapping from UI: %s", results)
-                            break
-
-                    except aiohttp.ClientResponseError as cre:
-                        if cre.status in (404, 410):
-                            logger.warning(
-                                "Results endpoint gone (status %s) for %s. Clearing session fields to re-initiate.",
-                                cre.status, filename,
-                            )
-                            await self._clear_matching_session_fields_and_save(filename, frontmatter, transcript)
-                            return
-                        logger.warning(
-                            "HTTP error polling results (attempt %d/%d) for %s: %s",
-                            attempt + 1, max_attempts, filename, cre,
-                        )
-                    except (aiohttp.ClientError, json.JSONDecodeError, asyncio.TimeoutError) as e:
-                        logger.warning(
-                            "Transient error polling results (attempt %d/%d) for %s: %s",
-                            attempt + 1, max_attempts, filename, e,
-                        )
-
-                    if attempt < max_attempts - 1:
-                        await asyncio.sleep(backoff_seconds * (2 ** attempt))
-                        continue
-
-                    logger.error(
-                        "Exhausted retries polling results for %s. Clearing session fields to re-initiate.",
-                        filename,
-                    )
-                    await self._clear_matching_session_fields_and_save(filename, frontmatter, transcript)
-                    return
-        except ResultsNotReadyError:
-            raise
+        # Check if user has marked as finished
+        if not validation_data['finished']:
+            logger.info("Validation not complete yet for: %s. Will retry later.", filename)
+            raise ResultsNotReadyError(f"User has not checked 'Finished' in: {filename}")
         
-        # Process the results
-        frontmatter_results = {}
-        for speaker_id, speaker_data in results.items():
-            frontmatter_speaker_data = dict(speaker_data)
-            
-            if 'person_id' in frontmatter_speaker_data:
-                frontmatter_speaker_data['person_id'] = f"[[{frontmatter_speaker_data['person_id']}]]"
-            
-            if 'organisation' in frontmatter_speaker_data:
-                frontmatter_speaker_data['organisation'] = f"[[{frontmatter_speaker_data['organisation']}]]"
-            
-            frontmatter_results[speaker_id] = frontmatter_speaker_data
+        # Validate the input fields
+        errors = []
+        for speaker_id, value in validation_data['speakers'].items():
+            if value and value.strip():  # Only validate non-empty fields
+                error = validate_wikilink_field(value, speaker_id)
+                if error:
+                    errors.append(error)
         
-        frontmatter['final_speaker_mapping'] = frontmatter_results
-        
-        if 'identified_speakers' in frontmatter:
-            del frontmatter['identified_speakers']
-        
-        new_transcript = transcript
-        for speaker_id, speaker_data in results.items():
-            name = speaker_data.get("name", "Unknown")
-            organization = speaker_data.get("organisation", "")
+        # If validation errors, update file with errors and notify user
+        if errors:
+            logger.warning("Validation errors in %s: %s", filename, [e.message for e in errors])
             
-            if organization:
-                replacement = f"{name} ({organization}):"
+            # Insert error callout and uncheck Finished
+            updated_content = insert_error_in_section(
+                content, 
+                errors, 
+                self.FORM_START
+            )
+            
+            # Save the updated file
+            async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
+                await f.write(updated_content)
+            os.utime(self.input_dir / filename, None)
+            
+            # Send Discord notification about the errors
+            try:
+                error_summary = "; ".join(e.message for e in errors)
+                dm_text = (
+                    f"⚠️ **Validation errors in speaker identification**\n"
+                    f"File: `{filename}`\n"
+                    f"Errors: {error_summary}\n"
+                    f"Please fix and check Finished again."
+                )
+                await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
+            except Exception as e:
+                logger.warning("Failed to send Discord notification: %s", e)
+            
+            raise ResultsNotReadyError(f"Validation errors in: {filename}")
+        
+        logger.info("Validation complete for: %s. Processing results.", filename)
+        
+        # Extract the transcript (content after validation section)
+        transcript = self._remove_validation_section(content)
+        transcript = read_text_from_content(transcript)  # Remove frontmatter from what remains
+        
+        # Build the final speaker mapping from user input
+        final_mapping = {}
+        unidentified_speakers = []
+        
+        for speaker_id, wikilink in validation_data['speakers'].items():
+            if not wikilink or not wikilink.strip():
+                # Empty entry - keep original speaker label
+                unidentified_speakers.append(speaker_id)
+                final_mapping[speaker_id] = {
+                    "name": speaker_id,  # Keep as "Speaker A", etc.
+                    "person_id": ""
+                }
             else:
-                replacement = f"{name}:"
+                person_id, display_name = self._extract_person_from_wikilink(wikilink)
+                final_mapping[speaker_id] = {
+                    "name": display_name,
+                    "person_id": f"[[{person_id}]]" if person_id != "Unknown" else ""
+                }
+        
+        # Update frontmatter
+        frontmatter['final_speaker_mapping'] = final_mapping
+        del frontmatter['speaker_validation_pending']
+        
+        # Store user notes if any
+        if validation_data['notes']:
+            frontmatter['speaker_identification_notes'] = validation_data['notes']
+        
+        # Store quality issues flag
+        if validation_data['quality_issues']:
+            frontmatter['transcript_quality_issues'] = True
+        
+        # Replace speaker labels in the transcript (only for identified speakers)
+        new_transcript = transcript
+        for speaker_id, speaker_data in final_mapping.items():
+            # Skip replacement for unidentified speakers (keep original label)
+            if speaker_id in unidentified_speakers:
+                continue
+            
+            name = speaker_data.get("name", "Unknown")
+            # Just use the name - wikilinks are shown in the summary section
+            replacement = f"{name}:"
             
             pattern = re.escape(f"{speaker_id}:")
             new_transcript = re.sub(pattern, replacement, new_transcript)
         
-        full_content = frontmatter_to_text(frontmatter) + new_transcript
+        # Generate the summary section to replace validation section
+        summary_section = self._generate_speaker_summary(
+            final_mapping, 
+            validation_data['notes'],
+            unidentified_speakers,
+            has_quality_issues=validation_data['quality_issues']
+        )
+        
+        # Save the updated file: frontmatter + summary + modified transcript
+        full_content = frontmatter_to_text(frontmatter) + summary_section + new_transcript
         async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
             await f.write(full_content)
         os.utime(self.input_dir / filename, None)
+        
         logger.info("Completed speaker identification workflow for: %s", filename)
 
     async def reset(self, filename: str) -> None:
@@ -457,49 +648,69 @@ class SpeakerIdentifier(NoteProcessor):
                 logger.info(f"Stage '{self.stage_name}' not found in processing stages for {filename}. No reset needed.")
                 return
 
-            current_transcript = read_text_from_content(content)
+            # Remove any validation section (pending or completed summary)
+            content_without_validation = self._remove_validation_section(content)
+            current_transcript = read_text_from_content(content_without_validation)
             transcript_to_save = current_transcript
             reverted = False
 
-            old_identified_speakers = frontmatter.get('identified_speakers')
-            if isinstance(old_identified_speakers, list):
-                logger.info(f"Detected old speaker format (list) for {filename}. Reverting names.")
-                identified_names = old_identified_speakers
+            # Check for completed speaker mapping and revert names
+            final_mapping = frontmatter.get('final_speaker_mapping')
+            if final_mapping:
+                logger.info(f"Detected speaker mapping for {filename}. Reverting names.")
                 modified_transcript = current_transcript
-                for i, name in enumerate(identified_names):
-                    if i >= 26:
-                        logger.warning(f"More than 26 speakers detected in old format list for {filename}, stopping revert.")
-                        break
-                    original_label = f"Speaker {chr(ord('A') + i)}:"
+                logger.debug(f"Reverting transcript text based on mapping: {final_mapping}")
+                for speaker_id, speaker_data in final_mapping.items():
+                    name = speaker_data.get("name", "Unknown")
+                    person_id = speaker_data.get("person_id", "").replace('[[', '').replace(']]', '')
+                    original_label = f"{speaker_id}:"
+                    
+                    if person_id:
+                        # New format: Name ([[Person ID]]):
+                        replaced_string = f"{name} ([[{person_id}]]):"
+                        modified_transcript = modified_transcript.replace(replaced_string, original_label)
+                    
+                    # Also try without person_id (fallback)
                     replaced_string = f"{name}:"
                     modified_transcript = modified_transcript.replace(replaced_string, original_label)
+                    
+                    # Legacy format: Name (Organisation):
+                    organization = speaker_data.get("organisation", "").replace('[[', '').replace(']]', '')
+                    if organization:
+                        replaced_string = f"{name} ({organization}):"
+                        modified_transcript = modified_transcript.replace(replaced_string, original_label)
+                        replaced_string = f"{name} ([[{organization}]]):"
+                        modified_transcript = modified_transcript.replace(replaced_string, original_label)
+                
                 transcript_to_save = modified_transcript
                 reverted = True
             else:
-                final_mapping = frontmatter.get('final_speaker_mapping')
-                if final_mapping:
-                    logger.info(f"Detected new speaker format (dict) for {filename}. Reverting names.")
+                # Handle legacy old format (list of speaker names)
+                old_identified_speakers = frontmatter.get('identified_speakers')
+                if isinstance(old_identified_speakers, list):
+                    logger.info(f"Detected old speaker format (list) for {filename}. Reverting names.")
+                    identified_names = old_identified_speakers
                     modified_transcript = current_transcript
-                    logger.debug(f"Reverting transcript text based on mapping: {final_mapping}")
-                    for speaker_id, speaker_data in final_mapping.items():
-                        name = speaker_data.get("name", "Unknown")
-                        organization = speaker_data.get("organisation", "").replace('[[', '').replace(']]', '')
-                        original_label = f"{speaker_id}:"
-                        if organization:
-                            replaced_string = f"{name} ({organization}):"
-                        else:
-                            replaced_string = f"{name}:"
+                    for i, name in enumerate(identified_names):
+                        if i >= 26:
+                            logger.warning(f"More than 26 speakers detected in old format list for {filename}, stopping revert.")
+                            break
+                        original_label = f"Speaker {chr(ord('A') + i)}:"
+                        replaced_string = f"{name}:"
                         modified_transcript = modified_transcript.replace(replaced_string, original_label)
                     transcript_to_save = modified_transcript
                     reverted = True
                 else:
-                    logger.warning(f"Cannot revert transcript text for {filename}: Missing 'final_speaker_mapping' (new format) or 'identified_speakers' list (old format).")
+                    logger.warning(f"Cannot revert transcript text for {filename}: Missing 'final_speaker_mapping'.")
 
+            # Remove all speaker-identification related keys
             keys_to_remove = [
                 'identified_speakers',
                 'speaker_matcher_ui_url',
                 'speaker_matcher_results_url',
                 'speaker_matcher_task_id',
+                'speaker_validation_pending',
+                'speaker_identification_notes',
                 'final_speaker_mapping'
             ]
             cleaned_frontmatter = {k: v for k, v in frontmatter.items() if k not in keys_to_remove}

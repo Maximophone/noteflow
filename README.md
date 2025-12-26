@@ -11,14 +11,14 @@ A document processing pipeline for audio transcription and note management.
 
 ### Note Processing Pipeline
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
-- **Speaker Identification** - AI-assisted speaker identification with human-in-the-loop confirmation via Discord
+- **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
 - **Interaction Logging** - Generates meeting notes for each participant
 
 ### Note Processors
 | Processor | Description |
 |-----------|-------------|
 | `TranscriptClassifier` | Classifies transcripts into categories |
-| `SpeakerIdentifier` | Identifies speakers using AI + Discord confirmation UI |
+| `SpeakerIdentifier` | Identifies speakers using AI + inline Obsidian validation |
 | `MeditationProcessor` | Processes meditation transcripts |
 | `DiaryProcessor` | Formats diary entries |
 | `IdeaProcessor` | Extracts and logs ideas to a directory |
@@ -129,8 +129,16 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 1. **Video → Audio**: VideoToAudioProcessor extracts audio from video files
 2. **Audio → Transcript**: AudioTranscriber creates markdown transcripts
 3. **Classification**: TranscriptClassifier categorizes the transcript
-4. **Speaker ID**: SpeakerIdentifier identifies speakers (multi-stage with UI)
+4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
 5. **Processing**: Category-specific processors handle the rest
+
+### Obsidian Form System
+
+The `processors/common/obsidian_form.py` module provides a reusable text-based form system for Obsidian:
+- Validates user input (e.g., wikilink format)
+- Shows error callouts for invalid data  
+- Unchecks completion checkbox on validation errors
+- Sends Discord notifications for user feedback
 
 ### Scheduler
 
@@ -152,4 +160,8 @@ category: meeting
 ## License
 
 [Your license here]
+
+
+
+
 
