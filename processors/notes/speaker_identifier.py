@@ -102,6 +102,7 @@ class SpeakerIdentifier(NoteProcessor):
             "---",
             "",
             "## Validation",
+            "- [ ] Transcript has quality issues (bad transcription, wrong diarization, etc.) <!-- input:quality_issues -->",
             "- [ ] Finished <!-- input:finished -->",
             "",
             self.VALIDATION_SECTION_END,
@@ -136,6 +137,7 @@ class SpeakerIdentifier(NoteProcessor):
         result = {
             'speakers': {},
             'notes': '',
+            'quality_issues': False,
             'finished': False
         }
         
@@ -151,6 +153,10 @@ class SpeakerIdentifier(NoteProcessor):
         notes_match = re.search(notes_pattern, section, re.DOTALL)
         if notes_match:
             result['notes'] = notes_match.group(1).strip()
+        
+        # Parse quality issues checkbox
+        quality_pattern = r'\[(x|X)\]\s+Transcript has quality issues.*<!-- input:quality_issues -->'
+        result['quality_issues'] = bool(re.search(quality_pattern, section))
         
         # Parse finished checkbox: [x] or [X] before <!-- input:finished -->
         finished_pattern = r'\[(x|X)\]\s+Finished\s+<!-- input:finished -->'
@@ -184,7 +190,8 @@ class SpeakerIdentifier(NoteProcessor):
         self, 
         final_mapping: Dict[str, Dict], 
         notes: str,
-        unidentified_speakers: List[str]
+        unidentified_speakers: List[str],
+        has_quality_issues: bool = False
     ) -> str:
         """
         Generate the compact summary to replace the validation section after completion.
@@ -193,6 +200,7 @@ class SpeakerIdentifier(NoteProcessor):
             final_mapping: Dict mapping speaker labels to final speaker data
             notes: User's additional notes
             unidentified_speakers: List of speaker labels that were not filled in
+            has_quality_issues: Whether user flagged quality issues
         
         Returns:
             Markdown string for the summary section
@@ -204,8 +212,11 @@ class SpeakerIdentifier(NoteProcessor):
             if person_id:
                 person_links.append(person_id)
         
-        # Determine if we should show warning or success
-        if unidentified_speakers:
+        # Determine callout type and text based on issues
+        if has_quality_issues:
+            callout_type = "warning"
+            callout_text = "Speaker identification complete (quality issues flagged)"
+        elif unidentified_speakers:
             callout_type = "warning"
             callout_text = "Speaker identification complete (some speakers not identified)"
         else:
@@ -228,6 +239,12 @@ class SpeakerIdentifier(NoteProcessor):
         if unidentified_speakers:
             lines.extend([
                 f"**Not identified:** {', '.join(unidentified_speakers)}",
+                "",
+            ])
+        
+        if has_quality_issues:
+            lines.extend([
+                "⚠️ **Quality issues flagged**",
                 "",
             ])
         
@@ -495,6 +512,10 @@ class SpeakerIdentifier(NoteProcessor):
         if validation_data['notes']:
             frontmatter['speaker_identification_notes'] = validation_data['notes']
         
+        # Store quality issues flag
+        if validation_data['quality_issues']:
+            frontmatter['transcript_quality_issues'] = True
+        
         # Replace speaker labels in the transcript (only for identified speakers)
         new_transcript = transcript
         for speaker_id, speaker_data in final_mapping.items():
@@ -517,7 +538,8 @@ class SpeakerIdentifier(NoteProcessor):
         summary_section = self._generate_speaker_summary(
             final_mapping, 
             validation_data['notes'],
-            unidentified_speakers
+            unidentified_speakers,
+            has_quality_issues=validation_data['quality_issues']
         )
         
         # Save the updated file: frontmatter + summary + modified transcript
