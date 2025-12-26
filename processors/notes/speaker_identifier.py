@@ -180,13 +180,19 @@ class SpeakerIdentifier(NoteProcessor):
         else:
             return (inner.strip(), inner.strip())
     
-    def _generate_speaker_summary(self, final_mapping: Dict[str, Dict], notes: str) -> str:
+    def _generate_speaker_summary(
+        self, 
+        final_mapping: Dict[str, Dict], 
+        notes: str,
+        unidentified_speakers: List[str]
+    ) -> str:
         """
         Generate the compact summary to replace the validation section after completion.
         
         Args:
             final_mapping: Dict mapping speaker labels to final speaker data
             notes: User's additional notes
+            unidentified_speakers: List of speaker labels that were not filled in
         
         Returns:
             Markdown string for the summary section
@@ -198,14 +204,32 @@ class SpeakerIdentifier(NoteProcessor):
             if person_id:
                 person_links.append(person_id)
         
+        # Determine if we should show warning or success
+        if unidentified_speakers:
+            callout_type = "warning"
+            callout_text = "Speaker identification complete (some speakers not identified)"
+        else:
+            callout_type = "success"
+            callout_text = "Speaker identification complete"
+        
         lines = [
             self.VALIDATION_SECTION_START,
             "",
-            "> [!success] Speaker identification complete",
-            "",
-            f"**Speakers:** {', '.join(person_links)}",
+            f"> [!{callout_type}] {callout_text}",
             "",
         ]
+        
+        if person_links:
+            lines.extend([
+                f"**Speakers:** {', '.join(person_links)}",
+                "",
+            ])
+        
+        if unidentified_speakers:
+            lines.extend([
+                f"**Not identified:** {', '.join(unidentified_speakers)}",
+                "",
+            ])
         
         if notes:
             lines.extend([
@@ -444,12 +468,22 @@ class SpeakerIdentifier(NoteProcessor):
         
         # Build the final speaker mapping from user input
         final_mapping = {}
+        unidentified_speakers = []
+        
         for speaker_id, wikilink in validation_data['speakers'].items():
-            person_id, display_name = self._extract_person_from_wikilink(wikilink)
-            final_mapping[speaker_id] = {
-                "name": display_name,
-                "person_id": f"[[{person_id}]]" if person_id != "Unknown" else ""
-            }
+            if not wikilink or not wikilink.strip():
+                # Empty entry - keep original speaker label
+                unidentified_speakers.append(speaker_id)
+                final_mapping[speaker_id] = {
+                    "name": speaker_id,  # Keep as "Speaker A", etc.
+                    "person_id": ""
+                }
+            else:
+                person_id, display_name = self._extract_person_from_wikilink(wikilink)
+                final_mapping[speaker_id] = {
+                    "name": display_name,
+                    "person_id": f"[[{person_id}]]" if person_id != "Unknown" else ""
+                }
         
         # Update frontmatter
         frontmatter['final_speaker_mapping'] = final_mapping
@@ -459,9 +493,13 @@ class SpeakerIdentifier(NoteProcessor):
         if validation_data['notes']:
             frontmatter['speaker_identification_notes'] = validation_data['notes']
         
-        # Replace speaker labels in the transcript
+        # Replace speaker labels in the transcript (only for identified speakers)
         new_transcript = transcript
         for speaker_id, speaker_data in final_mapping.items():
+            # Skip replacement for unidentified speakers (keep original label)
+            if speaker_id in unidentified_speakers:
+                continue
+            
             name = speaker_data.get("name", "Unknown")
             person_id = speaker_data.get("person_id", "")
             
@@ -474,7 +512,11 @@ class SpeakerIdentifier(NoteProcessor):
             new_transcript = re.sub(pattern, replacement, new_transcript)
         
         # Generate the summary section to replace validation section
-        summary_section = self._generate_speaker_summary(final_mapping, validation_data['notes'])
+        summary_section = self._generate_speaker_summary(
+            final_mapping, 
+            validation_data['notes'],
+            unidentified_speakers
+        )
         
         # Save the updated file: frontmatter + summary + modified transcript
         full_content = frontmatter_to_text(frontmatter) + summary_section + new_transcript
