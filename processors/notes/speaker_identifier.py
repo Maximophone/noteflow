@@ -566,12 +566,8 @@ class SpeakerIdentifier(NoteProcessor):
                 continue
             
             name = speaker_data.get("name", "Unknown")
-            person_id = speaker_data.get("person_id", "")
-            
-            if person_id:
-                replacement = f"{name} ({person_id}):"
-            else:
-                replacement = f"{name}:"
+            # Just use the name - wikilinks are shown in the summary section
+            replacement = f"{name}:"
             
             pattern = re.escape(f"{speaker_id}:")
             new_transcript = re.sub(pattern, replacement, new_transcript)
