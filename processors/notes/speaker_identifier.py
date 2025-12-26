@@ -28,7 +28,39 @@ class ResultsNotReadyError(Exception):
     pass
 
 class SpeakerIdentifier(NoteProcessor):
-    """Identifies speakers in transcripts using AI, initiates matching UI, and processes results."""
+    """Identifies speakers in transcripts using AI and inline Obsidian validation forms.
+    
+    This processor implements a multi-substage workflow:
+    
+    **Substage 1: AI Identification**
+        - Extracts unique speaker labels from the transcript (e.g., "Speaker A", "Speaker B")
+        - Uses AI to analyze speaking patterns and identify likely names
+        - Single-speaker transcripts are auto-assigned to the configured user
+    
+    **Substage 2: Validation Section Creation**
+        - Generates an inline validation form in the Obsidian file
+        - Shows AI-detected names with reasoning in collapsible details
+        - User fills in speaker names as wikilinks (e.g., [[John Smith]])
+        - Optional: User can flag quality issues with the transcript
+        - Sends Discord notification to prompt user action
+        - Raises ResultsNotReadyError to keep stage incomplete
+    
+    **Substage 3: Processing User Input**
+        - Parses the completed validation form
+        - Validates input format (wikilinks required)
+        - On validation error: unchecks Finished, shows error callout, notifies Discord
+        - On success: replaces speaker labels, generates summary, updates frontmatter
+    
+    **Frontmatter Fields**:
+        - speaker_validation_pending: True while waiting for user input
+        - final_speaker_mapping: Dict mapping speaker IDs to identified names
+        - transcript_quality_issues: True if user flagged quality problems
+        - speaker_identification_notes: User's optional notes
+    
+    **Validation Section Format** (see _generate_validation_section for details):
+        Uses HTML comments as parsing markers: <!-- input:speaker_a -->, etc.
+        User input is expected as Obsidian wikilinks: [[Person Name]] or [[Person|Alias]]
+    """
     stage_name = "speakers_identified"
     required_stage = TranscriptClassifier.stage_name
 
