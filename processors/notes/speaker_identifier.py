@@ -330,6 +330,8 @@ class SpeakerIdentifier(NoteProcessor):
             # Need to run substage 1 (AI identification) and substage 2 (create validation section)
             speaker_mapping = await self._substage1_identify_speakers(filename, frontmatter, transcript)
             await self._substage2_create_validation_section(filename, frontmatter, transcript, speaker_mapping)
+            # Raise to prevent base class from marking stage complete - we're waiting for user input
+            raise ResultsNotReadyError(f"Validation section created, waiting for user input in: {filename}")
 
     async def _handle_single_speaker(self, filename: str, frontmatter: Dict, transcript: str, speaker_label: str) -> None:
         """Handle transcripts with a single speaker by automatically assigning user's info."""
