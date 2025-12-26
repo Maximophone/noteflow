@@ -141,12 +141,13 @@ class SpeakerIdentifier(NoteProcessor):
             'finished': False
         }
         
-        # Parse speaker inputs: <!-- input:speaker_X -->[[Name]] or <!-- input:speaker_X -->[[Name|Display]]
-        speaker_pattern = r'<!-- input:speaker_([a-z]+) -->\s*(\[\[.+?\]\])?'
+        # Parse speaker inputs: <!-- input:speaker_X --> followed by any text on same line
+        # Captures both wikilinks [[Name]] and plain text (which will be validated later)
+        speaker_pattern = r'<!-- input:speaker_([a-z]+) -->([^\n]*)'
         for match in re.finditer(speaker_pattern, section):
             speaker_key = f"Speaker {match.group(1).upper()}"
-            wikilink = match.group(2).strip() if match.group(2) else ""
-            result['speakers'][speaker_key] = wikilink
+            value = match.group(2).strip() if match.group(2) else ""
+            result['speakers'][speaker_key] = value
         
         # Parse additional notes: everything after <!-- input:notes --> until the next ---
         notes_pattern = r'<!-- input:notes -->\s*(.*?)\s*---'
