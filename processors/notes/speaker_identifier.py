@@ -78,9 +78,13 @@ class SpeakerIdentifier(NoteProcessor):
             return False
         return True
 
-    # ===== Validation Section Markers =====
-    VALIDATION_SECTION_START = "<!-- validation:start -->"
-    VALIDATION_SECTION_END = "<!-- validation:end -->"
+    # ===== Section Markers =====
+    # Form markers for pending validation (user needs to fill in)
+    FORM_START = "<!-- form:speaker_identification:start -->"
+    FORM_END = "<!-- form:speaker_identification:end -->"
+    # Summary markers for completed validation (form replaced with summary)
+    SUMMARY_START = "<!-- summary:speaker_identification:start -->"
+    SUMMARY_END = "<!-- summary:speaker_identification:end -->"
     
     def _generate_validation_section(self, speaker_mapping: Dict[str, Dict]) -> str:
         """
@@ -94,7 +98,7 @@ class SpeakerIdentifier(NoteProcessor):
             Markdown string for the validation section
         """
         lines = [
-            self.VALIDATION_SECTION_START,
+            self.FORM_START,
             "",
             "> [!info] Data validation section — Fill in the fields below and check \"Finished\" when done",
             "",
@@ -137,7 +141,7 @@ class SpeakerIdentifier(NoteProcessor):
             "- [ ] Transcript has quality issues (bad transcription, wrong diarization, etc.) <!-- input:quality_issues -->",
             "- [ ] Finished <!-- input:finished -->",
             "",
-            self.VALIDATION_SECTION_END,
+            self.FORM_END,
             "",
         ])
         
@@ -154,9 +158,9 @@ class SpeakerIdentifier(NoteProcessor):
                 - 'finished': Boolean indicating if the checkbox is checked
             Returns None if validation section not found or malformed.
         """
-        # Find validation section
-        start_marker = self.VALIDATION_SECTION_START
-        end_marker = self.VALIDATION_SECTION_END
+        # Find form section (not summary - that means already processed)
+        start_marker = self.FORM_START
+        end_marker = self.FORM_END
         
         start_idx = content.find(start_marker)
         end_idx = content.find(end_marker)
@@ -257,7 +261,7 @@ class SpeakerIdentifier(NoteProcessor):
             callout_text = "Speaker identification complete"
         
         lines = [
-            self.VALIDATION_SECTION_START,
+            self.SUMMARY_START,
             "",
             f"> [!{callout_type}] {callout_text}",
             "",
@@ -288,31 +292,34 @@ class SpeakerIdentifier(NoteProcessor):
             ])
         
         lines.extend([
-            self.VALIDATION_SECTION_END,
+            self.SUMMARY_END,
             "",
         ])
         
         return "\n".join(lines)
     
     def _remove_validation_section(self, content: str) -> str:
-        """Remove the validation section from content, preserving surrounding content."""
-        start_marker = self.VALIDATION_SECTION_START
-        end_marker = self.VALIDATION_SECTION_END
+        """Remove the form or summary section from content, preserving surrounding content."""
+        # Try form markers first, then summary markers
+        for start_marker, end_marker in [
+            (self.FORM_START, self.FORM_END),
+            (self.SUMMARY_START, self.SUMMARY_END),
+        ]:
+            start_idx = content.find(start_marker)
+            end_idx = content.find(end_marker)
+            
+            if start_idx != -1 and end_idx != -1:
+                # Find the end of the line containing the end marker
+                end_line_idx = content.find('\n', end_idx)
+                if end_line_idx == -1:
+                    end_line_idx = len(content)
+                else:
+                    end_line_idx += 1  # Include the newline
+                
+                return content[:start_idx] + content[end_line_idx:]
         
-        start_idx = content.find(start_marker)
-        end_idx = content.find(end_marker)
-        
-        if start_idx == -1 or end_idx == -1:
-            return content
-        
-        # Find the end of the line containing the end marker
-        end_line_idx = content.find('\n', end_idx)
-        if end_line_idx == -1:
-            end_line_idx = len(content)
-        else:
-            end_line_idx += 1  # Include the newline
-        
-        return content[:start_idx] + content[end_line_idx:]
+        # No section found
+        return content
 
     def _extract_unique_speakers(self, transcript: str) -> set:
         """Extract all unique speaker labels from the transcript."""
@@ -530,7 +537,7 @@ class SpeakerIdentifier(NoteProcessor):
             updated_content = insert_error_in_section(
                 content, 
                 errors, 
-                self.VALIDATION_SECTION_START
+                self.FORM_START
             )
             
             # Save the updated file
