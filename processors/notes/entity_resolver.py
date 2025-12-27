@@ -83,7 +83,7 @@ class EntityResolver(NoteProcessor):
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_entity_resolution' tag
-    START_DATE = "2025-12-23"
+    START_DATE = "2025-12-19"
     
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
         """Additional criteria for processing."""
