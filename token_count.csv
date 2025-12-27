@@ -768,3 +768,5 @@ claude-opus-4-5-20251101,input,36361,2025-12-27 02:35:10.469728,main.py
 claude-opus-4-5-20251101,output,1465,2025-12-27 02:35:10.470370,main.py
 claude-opus-4-5-20251101,input,15104,2025-12-27 02:35:26.875368,main.py
 claude-opus-4-5-20251101,output,1087,2025-12-27 02:35:26.880046,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:40:44.066846,main.py
+gemini-3-pro-preview,output,127,2025-12-27 12:40:44.067423,main.py

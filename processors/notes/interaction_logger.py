@@ -172,7 +172,7 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        response = self.ai_model.message(message).content.strip()
+        response = self.tiny_ai_model.message(message).content.strip()
         
         # Parse JSON response
         try:
