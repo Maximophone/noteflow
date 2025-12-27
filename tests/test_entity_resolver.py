@@ -9,16 +9,19 @@ from unittest.mock import MagicMock, patch
 from processors.notes.entity_resolver import EntityResolver
 
 
+
 @pytest.fixture
-def mock_resolver(mock_ai):
+def mock_resolver(mock_ai, tmp_path):
     """Create an EntityResolver with mocked dependencies."""
     mock_discord = MagicMock()
-    mock_input_dir = Path("/tmp")
+    input_dir = tmp_path / "transcriptions"
+    input_dir.mkdir(parents=True)
     
     # Mock PATHS to avoid real filesystem dependencies
     with patch("processors.notes.entity_resolver.PATHS") as mock_paths:
-        mock_paths.vault_path = Path("/tmp/vault")
-        resolver = EntityResolver(mock_input_dir, mock_discord)
+        mock_paths.vault_path = tmp_path / "vault"
+        mock_paths.vault_path.mkdir(parents=True)
+        resolver = EntityResolver(input_dir, mock_discord)
         yield resolver
 
 class TestEntityReferenceParsing:
@@ -145,3 +148,54 @@ After"""
         
         result = mock_resolver._remove_form_section(content)
         assert result.strip() == "Before\nAfter"
+
+
+class TestReset:
+    """Tests for reset/revert functionality."""
+    
+    @pytest.mark.asyncio
+    async def test_reset_removes_form_and_cleans_frontmatter(self, mock_resolver):
+        """Reset should remove form section and clean up frontmatter."""
+        # Create a file with entity resolution form
+        input_file = mock_resolver.input_dir / "test_meeting.md"
+        input_file.write_text("""---
+date: '2025-12-27'
+category: meeting
+processing_stages:
+  - transcribed
+  - classified
+  - speakers_identified
+  - entities_resolved
+entity_resolution_pending: true
+detected_entities:
+  - name: John Smith
+    type: people
+resolved_entities:
+  - detected_name: John Smith
+    resolved_link: "[[John Smith]]"
+    entity_type: people
+---
+<!-- form:entity_resolution:start -->
+Form content here
+<!-- form:entity_resolution:end -->
+
+The transcript content here.
+""")
+        
+        await mock_resolver.reset("test_meeting.md")
+        
+        result = input_file.read_text()
+        
+        # Form should be removed
+        assert "<!-- form:entity_resolution:start -->" not in result
+        assert "Form content here" not in result
+        
+        # Transcript should be preserved
+        assert "The transcript content here" in result
+        
+        # Entity resolution fields should be removed from frontmatter
+        assert "entity_resolution_pending" not in result
+        assert "detected_entities" not in result
+        assert "resolved_entities" not in result
+        assert "entities_resolved" not in result
+
