@@ -770,3 +770,9 @@ claude-opus-4-5-20251101,input,15104,2025-12-27 02:35:26.875368,main.py
 claude-opus-4-5-20251101,output,1087,2025-12-27 02:35:26.880046,main.py
 gemini-3-pro-preview,input,4784,2025-12-27 12:40:44.066846,main.py
 gemini-3-pro-preview,output,127,2025-12-27 12:40:44.067423,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:41:19.136639,main.py
+gemini-3-pro-preview,output,97,2025-12-27 12:41:19.137021,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:44:29.818407,main.py
+gemini-3-pro-preview,output,259,2025-12-27 12:44:29.821435,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:44:42.419525,main.py
+gemini-3-pro-preview,output,130,2025-12-27 12:44:42.419965,main.py

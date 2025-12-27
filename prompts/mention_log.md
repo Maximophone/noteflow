@@ -19,11 +19,11 @@ For each mentioned person, provide:
 Return a JSON array with this format:
 ```json
 [
-  {
+  {{
     "name": "Person Name",
     "why_mentioned": "Brief context",
     "information_learned": "Any new facts (or null if none)"
-  }
+  }}
 ]
 ```
 
