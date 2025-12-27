@@ -94,6 +94,9 @@ class Paths:
         self.diary = self.vault_path / "Diary"
         self.people_path = self.vault_path / "People"
         
+        # NoteFlow inbox
+        self.inbox_path = self.vault_noteflow_path / "NoteFlow Inbox.md"
+        
         self.scripts_folder = self.vault_path / "scripts"
 
         # prompts

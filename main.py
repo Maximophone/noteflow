@@ -44,6 +44,7 @@ from processors.notes.base import NoteProcessor
 from processors.notes.base import NoteProcessor
 from processors.notes.notion_uploader import NotionUploadProcessor
 from processors.notes.entity_resolver import EntityResolver
+from processors.notes.inbox_generator import InboxGenerator
 
 from integrations.discord import DiscordIOCore
 
@@ -157,6 +158,14 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     # Add audio processors
     processors["_transcriber"] = transcriber
     processors["_video_to_audio"] = video_to_audio_processor
+    
+    # Add inbox generator
+    inbox_generator = InboxGenerator(
+        scan_dir=PATHS.transcriptions,
+        inbox_path=PATHS.inbox_path,
+        vault_path=PATHS.vault_path
+    )
+    processors["_inbox_generator"] = inbox_generator
 
     logger.info(f"Instantiated {len(processors)} processors.")
     return processors
