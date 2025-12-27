@@ -14,6 +14,7 @@ from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
 from .speaker_identifier import SpeakerIdentifier
+from .entity_resolver import EntityResolver
 from prompts.prompts import get_prompt
 
 import traceback
@@ -23,7 +24,7 @@ logger = setup_logger(__name__)
 class InteractionLogger(NoteProcessor):
     """Processes transcripts with identified speakers and adds AI-generated logs to each person's note."""
     stage_name = "interactions_logged"
-    required_stage = SpeakerIdentifier.stage_name
+    required_stage = EntityResolver.stage_name
 
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
@@ -412,4 +413,8 @@ class InteractionLogger(NoteProcessor):
         except Exception as e:
             logger.error(f"Error removing log entry from {person_name}'s note: {e}")
             logger.error(traceback.format_exc())
+
+
+
+
 

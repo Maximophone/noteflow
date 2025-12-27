@@ -83,3 +83,7 @@ class IdeaCleanupProcessor(NoteProcessor):
             
         logger.info("Cleaned up idea: %s", filename)
 
+
+
+
+

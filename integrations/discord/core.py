@@ -239,3 +239,7 @@ class DiscordIOCore:
             logger.error(f"Error during reconnection: {str(e)}")
             return False
 
+
+
+
+

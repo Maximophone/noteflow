@@ -52,6 +52,42 @@ def validate_wikilink_field(value: str, field_name: str, allow_empty: bool = Tru
     return None
 
 
+def validate_choice_field(
+    value: str, 
+    choices: set, 
+    field_name: str, 
+    allow_empty: bool = False
+) -> Optional[ValidationError]:
+    """
+    Validate that a field value is one of the allowed choices.
+    
+    Args:
+        value: The field value to validate
+        choices: Set of allowed values
+        field_name: Human-readable field name for error messages
+        allow_empty: If True, empty values are valid
+    
+    Returns:
+        ValidationError if invalid, None if valid
+    """
+    if not value or not value.strip():
+        if allow_empty:
+            return None
+        else:
+            return ValidationError(field_name, f"{field_name} is required")
+    
+    value = value.strip().lower()
+    normalized_choices = {c.lower() for c in choices}
+    
+    if value not in normalized_choices:
+        choices_str = ", ".join(sorted(choices))
+        return ValidationError(
+            field_name,
+            f"{field_name} must be one of: {choices_str}. Got: {value}"
+        )
+    return None
+
+
 def generate_error_callout(errors: List[ValidationError]) -> str:
     """
     Generate an Obsidian error callout for validation errors.

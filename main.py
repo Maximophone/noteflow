@@ -41,7 +41,9 @@ from processors.notes.todo import TodoProcessor
 from processors.notes.interaction_logger import InteractionLogger
 from processors.audio.video_to_audio import VideoToAudioProcessor
 from processors.notes.base import NoteProcessor
+from processors.notes.base import NoteProcessor
 from processors.notes.notion_uploader import NotionUploadProcessor
+from processors.notes.entity_resolver import EntityResolver
 
 from integrations.discord import DiscordIOCore
 
@@ -98,7 +100,9 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         IdeaCleanupProcessor,
         TodoProcessor,
         InteractionLogger,
-        NotionUploadProcessor
+        InteractionLogger,
+        NotionUploadProcessor,
+        EntityResolver
     ]
 
     for cls in note_processor_classes:
@@ -142,6 +146,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is NotionUploadProcessor:
                 instance = cls(input_dir=PATHS.transcriptions, database_url=PATHS.meetings_notion_database_url)
+            elif cls is EntityResolver:
+                instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
 
             processors[cls.stage_name] = instance
 
@@ -246,4 +252,8 @@ if __name__ == "__main__":
         logger.critical(f"NoteFlow service exited unexpectedly: {e}", exc_info=True)
     finally:
         logger.info("NoteFlow service stopped.")
+
+
+
+
 

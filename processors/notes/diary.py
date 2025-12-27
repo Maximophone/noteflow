@@ -81,3 +81,7 @@ class DiaryProcessor(NoteProcessor):
             
         logger.info("Processed diary entry: %s", filename)
 
+
+
+
+

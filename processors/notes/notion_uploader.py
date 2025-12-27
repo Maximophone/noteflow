@@ -9,13 +9,14 @@ from ..common.frontmatter import read_text_from_content, read_text_from_file, pa
 from integrations.notion_integration import NotionClient
 from config.logging_config import setup_logger
 from .speaker_identifier import SpeakerIdentifier
+from .entity_resolver import EntityResolver
 
 logger = setup_logger(__name__)
 
 class NotionUploadProcessor(NoteProcessor):
     """Uploads meeting transcripts to a Notion database after speaker identification."""
     stage_name = "notion_transcript_uploaded"
-    required_stage = SpeakerIdentifier.stage_name
+    required_stage = EntityResolver.stage_name
 
     def __init__(self, input_dir: Path, database_url: str):
         super().__init__(input_dir)

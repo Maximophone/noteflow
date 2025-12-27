@@ -140,3 +140,7 @@ class NotionProcessor(NoteProcessor):
 
         logger.info("Pulled from Notion and merged properties: %s", filename)
 
+
+
+
+

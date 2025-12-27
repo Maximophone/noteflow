@@ -103,3 +103,7 @@ def get_relative_link(from_path: Path, to_path: Path) -> str:
         relative = to_path.relative_to(from_path.parent.parent)
         return '../' + str(relative).replace('\\', '/')
 
+
+
+
+
