@@ -5,20 +5,21 @@ Tests for EntityResolver functionality.
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 from processors.notes.entity_resolver import EntityResolver
 
+
 @pytest.fixture
-def mock_resolver():
+def mock_resolver(mock_ai):
     """Create an EntityResolver with mocked dependencies."""
     mock_discord = MagicMock()
     mock_input_dir = Path("/tmp")
     
-    with patch("processors.notes.entity_resolver.PATHS") as mock_paths, \
-         patch("processors.notes.base.AI") as mock_ai:
-        # Mock vault path
+    # Mock PATHS to avoid real filesystem dependencies
+    with patch("processors.notes.entity_resolver.PATHS") as mock_paths:
         mock_paths.vault_path = Path("/tmp/vault")
         resolver = EntityResolver(mock_input_dir, mock_discord)
-        return resolver
+        yield resolver
 
 class TestEntityReferenceParsing:
     """Tests for parsing Entity Reference file."""

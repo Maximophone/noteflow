@@ -134,6 +134,7 @@ def mock_ai(monkeypatch):
     
     # Patch AI class in all locations where it's imported
     monkeypatch.setattr("processors.notes.base.AI", MockAI)
+    monkeypatch.setattr("processors.notes.entity_resolver.AI", MockAI)
     monkeypatch.setattr("ai_core.AI", MockAI)
     
     return controller
