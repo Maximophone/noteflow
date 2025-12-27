@@ -12,6 +12,7 @@ A document processing pipeline for audio transcription and note management.
 ### Note Processing Pipeline
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
 - **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
+- **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks
 - **Interaction Logging** - Generates meeting notes for each participant
 
 ### Note Processors
@@ -19,6 +20,7 @@ A document processing pipeline for audio transcription and note management.
 |-----------|-------------|
 | `TranscriptClassifier` | Classifies transcripts into categories |
 | `SpeakerIdentifier` | Identifies speakers using AI + inline Obsidian validation |
+| `EntityResolver` | Resolves named entities to wikilinks using AI + inline Obsidian validation |
 | `MeditationProcessor` | Processes meditation transcripts |
 | `DiaryProcessor` | Formats diary entries |
 | `IdeaProcessor` | Extracts and logs ideas to a directory |
@@ -130,7 +132,8 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 2. **Audio → Transcript**: AudioTranscriber creates markdown transcripts
 3. **Classification**: TranscriptClassifier categorizes the transcript
 4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
-5. **Processing**: Category-specific processors handle the rest
+5. **Entity Resolution**: EntityResolver detects/resolves entities (AI detection + inline Obsidian form for human validation)
+6. **Processing**: Category-specific processors handle the rest
 
 ### Obsidian Form System
 
