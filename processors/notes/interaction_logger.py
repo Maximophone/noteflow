@@ -145,6 +145,62 @@ class InteractionLogger(NoteProcessor):
         
         return self.ai_model.message(message).content.strip()
 
+    async def _generate_mention_logs_batch(self, transcript_content: str,
+                                            mentioned_names: List[str], meeting_title: str) -> Dict[str, Dict]:
+        """Generate log entries for all mentioned people in a single AI call.
+        
+        Returns:
+            Dict mapping person name to their log data:
+            {"Person Name": {"why_mentioned": "...", "information_learned": "..."}}
+        """
+        if not mentioned_names:
+            return {}
+        
+        mentioned_list = "\n".join(f"- {name}" for name in mentioned_names)
+        
+        prompt = get_prompt("mention_log").format(
+            transcript_content=transcript_content,
+            mentioned_people_list=mentioned_list,
+            meeting_title=meeting_title
+        )
+        
+        message = Message(
+            role="user",
+            content=[MessageContent(
+                type="text",
+                text=prompt
+            )]
+        )
+        
+        response = self.ai_model.message(message).content.strip()
+        
+        # Parse JSON response
+        try:
+            # Extract JSON from response (may have markdown code block)
+            import json
+            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response)
+            
+            # Convert to dict keyed by name
+            result = {}
+            for item in data:
+                name = item.get('name', '')
+                if name:
+                    result[name] = {
+                        'why_mentioned': item.get('why_mentioned', 'Briefly mentioned'),
+                        'information_learned': item.get('information_learned')
+                    }
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse mention logs JSON: {e}. Response: {response[:200]}")
+            # Fallback: return empty entries for all
+            return {name: {'why_mentioned': 'Mentioned in discussion', 'information_learned': None} 
+                    for name in mentioned_names}
+
     async def process_file(self, filename: str) -> None:
         """Process identified speakers in a transcript and add logs to their notes."""
         logger.info(f"Processing interactions from transcript: {filename}")
@@ -204,7 +260,8 @@ class InteractionLogger(NoteProcessor):
                     person_id=person_id,
                     meeting_date=meeting_date,
                     source_link=source_link,
-                    log_content=log_content
+                    log_content=log_content,
+                    category='meeting'
                 )
                 
                 if success:
@@ -231,19 +288,113 @@ class InteractionLogger(NoteProcessor):
                 continue
         
         logged_interactions = frontmatter.get('logged_interactions', [])
-        all_processed = all(speaker in logged_interactions for speaker in all_speakers)
+        all_speakers_processed = all(speaker in logged_interactions for speaker in all_speakers)
         
-        if all_processed:
-            logger.info(f"All speakers in {filename} have been processed. Marking stage as complete.")
-        else:
+        if not all_speakers_processed:
             remaining = len(all_speakers) - len(logged_interactions)
             logger.info(f"{remaining} speakers still pending in {filename}. Stage not marked complete yet.")
             raise Exception(f"Not all speakers processed in {filename}. Will retry later.")
+        
+        # ===== Process Mentions =====
+        # Get mentioned people from resolved_entities (people only, not participants)
+        resolved_entities = frontmatter.get('resolved_entities', [])
+        speaker_person_ids = set(speaker_data.get('person_id', '') for speaker_data in speaker_mapping.values())
+        
+        mentioned_people = [
+            entity['resolved_link'] 
+            for entity in resolved_entities 
+            if entity.get('entity_type') == 'people' 
+            and entity.get('resolved_link')
+            and entity['resolved_link'] not in speaker_person_ids
+        ]
+        
+        logged_mentions = frontmatter.get('logged_mentions', [])
+        pending_mentions = [mention for mention in mentioned_people if mention not in logged_mentions]
+        
+        if pending_mentions:
+            logger.info(f"Processing {len(pending_mentions)} mentions in {filename}")
+            
+            # Get names for batch processing
+            pending_names = [m.replace('[[', '').replace(']]', '') for m in pending_mentions]
+            
+            # Single AI call for all mentions
+            mention_logs = await self._generate_mention_logs_batch(
+                transcript_content=transcript,
+                mentioned_names=pending_names,
+                meeting_title=meeting_title
+            )
+            
+            # Process each mention with the batch results
+            for person_id in pending_mentions:
+                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_file_path = self.people_dir / f"{person_name}.md"
+                
+                if not person_file_path.exists():
+                    logger.warning(f"Person note not found for mention: {person_file_path}")
+                    # Still mark as logged to avoid retrying
+                    if 'logged_mentions' not in frontmatter:
+                        frontmatter['logged_mentions'] = []
+                    frontmatter['logged_mentions'].append(person_id)
+                    continue
+                
+                try:
+                    # Format log content from batch result
+                    log_data = mention_logs.get(person_name, {})
+                    why = log_data.get('why_mentioned', 'Mentioned in discussion')
+                    info = log_data.get('information_learned')
+                    
+                    log_lines = [f"- **Why mentioned**: {why}"]
+                    if info:
+                        log_lines.append(f"- **Info learned**: {info}")
+                    log_content = "\n".join(log_lines)
+                    
+                    success = await self._update_person_note(
+                        person_id=person_id,
+                        meeting_date=meeting_date,
+                        source_link=source_link,
+                        log_content=log_content,
+                        category='mention'
+                    )
+                    
+                    if success:
+                        if 'logged_mentions' not in frontmatter:
+                            frontmatter['logged_mentions'] = []
+                        
+                        frontmatter['logged_mentions'].append(person_id)
+                        
+                        file_path = self.input_dir / filename
+                        updated_content = frontmatter_to_text(frontmatter) + transcript
+                        
+                        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                            await f.write(updated_content)
+                        
+                        os.utime(file_path, None)
+                        
+                        logger.info(f"Updated transcript {filename} - logged mention for {person_name}")
+                    else:
+                        logger.error(f"Failed to update note for mention {person_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error generating mention log for {person_name}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
+        
+        # Final completion check
+        logged_mentions = frontmatter.get('logged_mentions', [])
+        all_mentions_processed = all(mention in logged_mentions for mention in mentioned_people)
+        
+        if all_speakers_processed and all_mentions_processed:
+            logger.info(f"All speakers and mentions in {filename} have been processed. Marking stage as complete.")
+        else:
+            remaining_mentions = len(mentioned_people) - len(logged_mentions)
+            logger.info(f"{remaining_mentions} mentions still pending in {filename}. Stage not marked complete yet.")
+            raise Exception(f"Not all mentions processed in {filename}. Will retry later.")
     
     async def _update_person_note(self, person_id: str, 
                                  meeting_date: str, 
                                  source_link: str, 
-                                 log_content: str) -> bool:
+                                 log_content: str,
+                                 category: str = 'meeting') -> bool:
         """Update a person's note with the new log entry."""
         person_name = person_id.replace('[[', '').replace(']]', '')
         person_file_path = self.people_dir / f"{person_name}.md"
@@ -260,7 +411,7 @@ class InteractionLogger(NoteProcessor):
             section_exists, section_pos, content_before_section = await self._find_ai_logs_section(person_content)
             
             new_log = {
-                'category': 'meeting',
+                'category': category,
                 'source': source_link,
                 'notes': log_content
             }

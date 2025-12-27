@@ -4,6 +4,30 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2025-12-27: Mention Logging Enhancement
+
+### Problem
+InteractionLogger only logged people who participated in meetings (speakers). People who were *mentioned* in discussions got no record.
+
+### Solution
+Extended InteractionLogger to also log mentions:
+- New `category: mention` vs existing `category: meeting`
+- **Batch processing**: Single AI call for all mentions (returns JSON), not per-person
+- Captures both "why mentioned" and "information learned about this person"
+- Sources mentions from `resolved_entities` (Entity Resolution output)
+- Filters out speakers to avoid duplicate logs
+
+### Key Learnings
+- Entity Resolution data (`resolved_entities`) can be reused for downstream features
+- Separating `logged_interactions` and `logged_mentions` in frontmatter allows independent progress tracking
+- Batch JSON prompts are far more efficient than per-item calls
+
+### Files Changed
+- `prompts/mention_log.md` - New lightweight prompt
+- `processors/notes/interaction_logger.py` - Added mention processing loop
+
+---
+
 ## 2025-12-27: Entity Resolution Implementation
 
 ### Problem

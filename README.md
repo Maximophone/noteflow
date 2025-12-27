@@ -13,7 +13,7 @@ A document processing pipeline for audio transcription and note management.
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
 - **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
 - **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks
-- **Interaction Logging** - Generates meeting notes for each participant
+- **Interaction Logging** - Generates meeting notes for participants and brief context logs for mentioned people
 
 ### Note Processors
 | Processor | Description |
