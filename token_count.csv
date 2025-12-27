@@ -776,3 +776,9 @@ gemini-3-pro-preview,input,4784,2025-12-27 12:44:29.818407,main.py
 gemini-3-pro-preview,output,259,2025-12-27 12:44:29.821435,main.py
 gemini-3-pro-preview,input,4784,2025-12-27 12:44:42.419525,main.py
 gemini-3-pro-preview,output,130,2025-12-27 12:44:42.419965,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:49:28.930298,main.py
+gemini-3-pro-preview,output,190,2025-12-27 12:49:28.933029,main.py
+gemini-3-pro-preview,input,4784,2025-12-27 12:49:49.599334,main.py
+gemini-3-pro-preview,output,103,2025-12-27 12:49:49.601824,main.py
+gemini-3-flash-preview,input,2224,2025-12-27 12:49:56.265614,main.py
+gemini-3-flash-preview,output,244,2025-12-27 12:49:56.266011,main.py

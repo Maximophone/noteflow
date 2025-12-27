@@ -188,18 +188,15 @@ class InteractionLogger(NoteProcessor):
             result = {}
             for item in data:
                 name = item.get('name', '')
-                if name:
-                    result[name] = {
-                        'why_mentioned': item.get('why_mentioned', 'Briefly mentioned'),
-                        'information_learned': item.get('information_learned')
-                    }
+                notes = item.get('notes', '')
+                if name and notes:
+                    result[name] = notes
             return result
             
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse mention logs JSON: {e}. Response: {response[:200]}")
-            # Fallback: return empty entries for all
-            return {name: {'why_mentioned': 'Mentioned in discussion', 'information_learned': None} 
-                    for name in mentioned_names}
+            # Fallback: return empty dict (skip mentions if parsing fails)
+            return {}
 
     async def process_file(self, filename: str) -> None:
         """Process identified speakers in a transcript and add logs to their notes."""
@@ -338,15 +335,16 @@ class InteractionLogger(NoteProcessor):
                     continue
                 
                 try:
-                    # Format log content from batch result
-                    log_data = mention_logs.get(person_name, {})
-                    why = log_data.get('why_mentioned', 'Mentioned in discussion')
-                    info = log_data.get('information_learned')
+                    # Get notes from batch result (notes is already a string with bullet points)
+                    log_content = mention_logs.get(person_name, '')
                     
-                    log_lines = [f"- **Why mentioned**: {why}"]
-                    if info:
-                        log_lines.append(f"- **Info learned**: {info}")
-                    log_content = "\n".join(log_lines)
+                    if not log_content:
+                        # AI decided this person had nothing meaningful to log
+                        if 'logged_mentions' not in frontmatter:
+                            frontmatter['logged_mentions'] = []
+                        frontmatter['logged_mentions'].append(person_id)
+                        logger.info(f"Skipping {person_name} - no meaningful mention notes")
+                        continue
                     
                     success = await self._update_person_note(
                         person_id=person_id,

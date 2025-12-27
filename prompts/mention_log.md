@@ -1,4 +1,4 @@
-Analyze this meeting transcript. Extract brief context about each person who was MENTIONED but was NOT a participant in the meeting.
+Analyze this meeting transcript. For each person who was MENTIONED but was NOT a participant, extract relevant notes.
 
 <transcript>
 {transcript_content}
@@ -12,22 +12,28 @@ Analyze this meeting transcript. Extract brief context about each person who was
 {meeting_title}
 </meeting_title>
 
-For each mentioned person, provide:
-1. **Why mentioned**: Brief context of why they came up in the discussion (1 sentence max)
-2. **Information learned**: Any new facts or updates about this person that were shared (if any)
+For each mentioned person, write bullet points covering any of:
+- Why they were mentioned
+- Asks or requests involving them
+- Information learned about them
+- Action items related to them
+- Any other relevant context
 
-Return a JSON array with this format:
+**Guidelines:**
+- Scale output to context: if a person is mentioned many times, write more points. If mentioned once in passing, one brief point is fine.
+- Be CONSERVATIVE: only write what is clearly stated. If anything is unclear or ambiguous, omit it. Do not speculate or infer.
+- Better to write too little than risk being wrong.
+- Skip a person entirely if there's nothing meaningful to note (don't force content).
+
+Return a JSON array:
 ```json
 [
   {{
     "name": "Person Name",
-    "why_mentioned": "Brief context",
-    "information_learned": "Any new facts (or null if none)"
+    "notes": "- First point\n- Second point"
   }}
 ]
 ```
 
-IMPORTANT:
-- Be extremely concise - one sentence max per field
-- If a person was only mentioned in passing with no meaningful context, set why_mentioned to "Briefly mentioned" and information_learned to null
-- Return valid JSON only
+If a person has nothing meaningful to log, omit them from the array entirely.
+Return valid JSON only.
