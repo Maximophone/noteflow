@@ -16,6 +16,7 @@ from .base import NoteProcessor
 from .speaker_identifier import SpeakerIdentifier
 from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ..common.obsidian_form import validate_wikilink_field, validate_choice_field, insert_error_in_section
+from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
@@ -74,12 +75,15 @@ class EntityResolver(NoteProcessor):
     
     def __init__(self, input_dir: Path, discord_io: DiscordIOCore):
         super().__init__(input_dir)
+        super().__init__(input_dir)
         self.discord_io = discord_io
         self.entity_reference_path = PATHS.vault_path / "Entity Reference.md"
+        # Use a more powerful model for entity resolution as per user request
+        self.entity_model = AI("opus4.5")
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_entity_resolution' tag
-    START_DATE = "2025-12-26"
+    START_DATE = "2025-12-23"
     
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
         """Additional criteria for processing."""
@@ -404,9 +408,10 @@ class EntityResolver(NoteProcessor):
         
         # Call AI
         try:
+
             unique_entities = {}
             
-            response = await asyncio.to_thread(self.tiny_ai_model.message, message, max_tokens=65000)
+            response = await asyncio.to_thread(self.entity_model.message, message)
             
             if response.error:
                 if "MAX_TOKENS" in str(response.error):
@@ -562,14 +567,34 @@ class EntityResolver(NoteProcessor):
         # Get transcript and replace entities
         transcript = read_text_from_content(self._remove_form_section(content))
         
+        # Prepare replacements mapping
+        replacements = {}
         for entity in resolved_entities:
-            if entity['resolved_link']:
-                # Replace detected_name with resolved_link
-                detected = entity['detected_name']
-                resolved = entity['resolved_link']
-                # Use word boundary matching
-                pattern = re.escape(detected)
-                transcript = re.sub(pattern, resolved, transcript)
+            if entity['resolved_link'] and entity['detected_name']:
+                replacements[entity['detected_name']] = entity['resolved_link']
+        
+        if replacements:
+            # Sort keys by length (descending) to match longest triggers first
+            sorted_keys = sorted(replacements.keys(), key=len, reverse=True)
+            
+            # Create a regex that matches either:
+            # 1. An existing wikilink (to ignore it)
+            # 2. One of our target terms (to replace it)
+            # We use word boundaries \b for the target terms to avoid partial matches inside words
+            pattern_string = r"(\[\[.*?\]\])|(\b(?:" + "|".join(re.escape(k) for k in sorted_keys) + r")\b)"
+            
+            def replace_callback(match):
+                full_match = match.group(0)
+                # If group 1 match (existing link), return as is
+                if match.group(1):
+                    return full_match
+                # If group 2 match (target term), replace it
+                detected_text = match.group(2)
+                if detected_text:
+                    return replacements.get(detected_text, full_match)
+                return full_match
+
+            transcript = re.sub(pattern_string, replace_callback, transcript)
         
         # Update Entity Reference file
         self._update_entity_reference(resolved_entities)
