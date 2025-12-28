@@ -108,6 +108,10 @@ class Paths:
         # LinkedIn paths
         self.linkedin_messages = self.vault_path / "LinkedIn Messages"
 
+        # Email digest paths
+        self.email_digests = self.vault_noteflow_path / "Email Digests"
+        self.email_state = self.runtime_path / "data" / "email_processor_state.json"
+
         # data
         self.data = self.runtime_path / "data"
 
@@ -138,7 +142,8 @@ class Paths:
             self.diary,
             self.ai_memory,
             self.linkedin_messages,
-            self.people_path
+            self.people_path,
+            self.email_digests,
         ])
     
 

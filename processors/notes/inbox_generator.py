@@ -21,28 +21,39 @@ logger = setup_logger(__name__)
 FORM_TYPES = {
     "speaker_validation_pending": "Speaker ID",
     "entity_resolution_pending": "Entity Resolution",
+    "meeting_summary_pending": "Meeting Summary",
 }
 
 # Form markers for error detection
 FORM_MARKERS = {
     "speaker_validation_pending": "<!-- form:speaker_identification:start -->",
     "entity_resolution_pending": "<!-- form:entity_resolution:start -->",
+    "meeting_summary_pending": "<!-- form:meeting_summary:start -->",
 }
 
 
 class InboxGenerator:
     """Generates a markdown inbox showing files awaiting user input."""
     
-    def __init__(self, scan_dir: Path, inbox_path: Path, vault_path: Path):
+    def __init__(self, scan_dir: Path = None, inbox_path: Path = None, vault_path: Path = None, 
+                 scan_dirs: List[Path] = None):
         """
         Initialize the inbox generator.
         
         Args:
-            scan_dir: Directory to scan for pending forms
+            scan_dir: Single directory to scan (deprecated, use scan_dirs)
             inbox_path: Path to write the inbox markdown file
             vault_path: Obsidian vault root for computing relative paths
+            scan_dirs: List of directories to scan for pending forms
         """
-        self.scan_dir = scan_dir
+        # Support both single dir and list of dirs
+        if scan_dirs:
+            self.scan_dirs = scan_dirs
+        elif scan_dir:
+            self.scan_dirs = [scan_dir]
+        else:
+            self.scan_dirs = []
+        
         self.inbox_path = inbox_path
         self.vault_path = vault_path
     
@@ -124,20 +135,21 @@ class InboxGenerator:
         }
     
     def _scan_all(self) -> List[Dict]:
-        """Scan all markdown files in the directory for pending forms."""
+        """Scan all markdown files in all directories for pending forms."""
         results = []
         
-        if not self.scan_dir.exists():
-            logger.warning(f"Scan directory does not exist: {self.scan_dir}")
-            return results
-        
-        for file_path in self.scan_dir.iterdir():
-            if not file_path.suffix == '.md':
+        for scan_dir in self.scan_dirs:
+            if not scan_dir.exists():
+                logger.warning(f"Scan directory does not exist: {scan_dir}")
                 continue
             
-            file_info = self._scan_file(file_path)
-            if file_info:
-                results.append(file_info)
+            for file_path in scan_dir.iterdir():
+                if not file_path.suffix == '.md':
+                    continue
+                
+                file_info = self._scan_file(file_path)
+                if file_info:
+                    results.append(file_info)
         
         # Sort by date (newest first), with None dates at the end
         def sort_key(x):

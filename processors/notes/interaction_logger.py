@@ -15,6 +15,7 @@ from config.logging_config import setup_logger
 from config.paths import PATHS
 from .speaker_identifier import SpeakerIdentifier
 from .entity_resolver import EntityResolver
+from .meeting_summary_generator import MeetingSummaryGenerator
 from prompts.prompts import get_prompt
 
 import traceback
@@ -24,7 +25,7 @@ logger = setup_logger(__name__)
 class InteractionLogger(NoteProcessor):
     """Processes transcripts with identified speakers and adds AI-generated logs to each person's note."""
     stage_name = "interactions_logged"
-    required_stage = EntityResolver.stage_name
+    required_stage = MeetingSummaryGenerator.stage_name
 
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)

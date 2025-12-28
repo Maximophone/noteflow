@@ -32,7 +32,7 @@ from processors.notes.notion import NotionProcessor
 from processors.notes.markdownload import MarkdownloadProcessor
 from processors.notes.speaker_identifier import SpeakerIdentifier
 from processors.notes.meeting import MeetingProcessor
-from processors.notes.meeting_summary import MeetingSummaryProcessor
+from processors.notes.meeting_summary_generator import MeetingSummaryGenerator
 from processors.notes.transcript_classifier import TranscriptClassifier
 from processors.notes.conversation import ConversationProcessor
 from processors.notes.diary import DiaryProcessor
@@ -45,6 +45,8 @@ from processors.notes.base import NoteProcessor
 from processors.notes.notion_uploader import NotionUploadProcessor
 from processors.notes.entity_resolver import EntityResolver
 from processors.notes.inbox_generator import InboxGenerator
+from processors.notes.email_digest import EmailDigestProcessor
+from processors.notes.email_summary_generator import EmailSummaryGenerator
 
 from integrations.discord import DiscordIOCore
 
@@ -94,7 +96,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         MarkdownloadProcessor,
         SpeakerIdentifier,
         MeetingProcessor,
-        MeetingSummaryProcessor,
+        MeetingSummaryGenerator,
         TranscriptClassifier,
         ConversationProcessor,
         DiaryProcessor,
@@ -131,8 +133,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
                 instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
             elif cls is MeetingProcessor:
                 instance = cls(input_dir=PATHS.transcriptions, output_dir=PATHS.meetings, template_path=PATHS.meeting_template)
-            elif cls is MeetingSummaryProcessor:
-                instance = cls(input_dir=PATHS.meetings, transcript_dir=PATHS.transcriptions)
+            elif cls is MeetingSummaryGenerator:
+                instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
             elif cls is TranscriptClassifier:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is ConversationProcessor:
@@ -159,13 +161,35 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     processors["_transcriber"] = transcriber
     processors["_video_to_audio"] = video_to_audio_processor
     
-    # Add inbox generator
+    # Add inbox generator (scans multiple directories)
     inbox_generator = InboxGenerator(
-        scan_dir=PATHS.transcriptions,
+        scan_dirs=[PATHS.transcriptions, PATHS.email_digests],
         inbox_path=PATHS.inbox_path,
         vault_path=PATHS.vault_path
     )
     processors["_inbox_generator"] = inbox_generator
+
+    # Add email digest processor
+    email_digest_processor = EmailDigestProcessor(
+        output_dir=PATHS.email_digests,
+        state_file=PATHS.email_state,
+        overwrite_existing=False
+    )
+    processors["_email_digest"] = email_digest_processor
+    
+    # Add entity resolver for email digests (separate from transcript resolver)
+    email_entity_resolver = EntityResolver(
+        input_dir=PATHS.email_digests, discord_io=discord_io
+    )
+    email_entity_resolver.required_stage = "email_digest_created"  # Override class default
+    processors["_entity_resolver_emails"] = email_entity_resolver
+    
+    # Add email summary generator
+    email_summary_generator = EmailSummaryGenerator(
+        input_dir=PATHS.email_digests,
+        index_dir=PATHS.email_digests,
+    )
+    processors["_email_summary_generator"] = email_summary_generator
 
     logger.info(f"Instantiated {len(processors)} processors.")
     return processors
@@ -197,7 +221,10 @@ async def main():
     
     for name, processor in all_processors.items():
         if hasattr(processor, 'process_all') and callable(processor.process_all):
-            if isinstance(processor, NoteProcessor) and processor.stage_name:
+            # Use dict key for special processors (underscore prefix), stage_name for regular ones
+            if name.startswith('_'):
+                job_id = name
+            elif isinstance(processor, NoteProcessor) and processor.stage_name:
                 job_id = processor.stage_name
             else:
                 job_id = name

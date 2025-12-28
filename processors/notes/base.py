@@ -50,8 +50,9 @@ class NoteProcessor(ABC):
         if self.__class__.stage_name in stages:
             return False
             
-        # Check required stage if specified
-        if self.__class__.required_stage and self.__class__.required_stage not in stages:
+        # Check required stage if specified (check instance attr first, then class)
+        required = getattr(self, 'required_stage', None) or self.__class__.required_stage
+        if required and required not in stages:
             return False
 
         # Additional validation specific to the processor

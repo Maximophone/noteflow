@@ -101,9 +101,22 @@ class EntityResolver(NoteProcessor):
         if frontmatter.get('entity_resolution_pending'):
             return True
         
-        # Only process meeting category files
-        if frontmatter.get('category') != 'meeting':
+        # Only process meeting or email category files
+        category = frontmatter.get('category')
+        if category not in ('meeting', 'email'):
             return False
+        
+        # For emails, skip the required_stage check (no speaker identification needed)
+        # For meetings, the base class already checked required_stage
+        # This is handled here because base._should_process checks required_stage
+        # before calling should_process, so we override that by accepting emails here
+        if category == 'email':
+            # Check that entity_resolution hasn't already been done
+            stages = frontmatter.get('processing_stages', [])
+            if self.__class__.stage_name in stages:
+                return False
+            # Accept email for processing
+            return True
             
         # Check date for automatic processing
         file_date = frontmatter.get('date')

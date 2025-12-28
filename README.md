@@ -27,8 +27,11 @@ A document processing pipeline for audio transcription and note management.
 | `IdeaCleanupProcessor` | Cleans up idea notes |
 | `TodoProcessor` | Extracts todo items from transcripts |
 | `MeetingProcessor` | Creates meeting notes from templates |
-| `MeetingSummaryProcessor` | Generates meeting summaries |
+| `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
 | `InteractionLogger` | Logs interactions per person |
+| `EmailDigestProcessor` | Fetches daily important emails from Gmail with AI filtering |
+| `EmailSummaryGenerator` | Generates AI summaries for email digests and maintains monthly index |
+| `InboxGenerator` | Generates inbox showing files awaiting user input (multi-directory) |
 | `NotionUploadProcessor` | Uploads transcripts to Notion |
 
 ### External Content Processors
@@ -122,6 +125,8 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
   Meetings/                  # Meeting notes
   Diary/                     # Diary entries
   People/                    # People notes (for interaction logging)
+  KnowledgeBot/
+    Email Digests/           # Daily email digests from Gmail
 ```
 
 ## Architecture
@@ -134,6 +139,15 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
 5. **Entity Resolution**: EntityResolver detects/resolves entities (AI detection + inline Obsidian form for human validation)
 6. **Processing**: Category-specific processors handle the rest
+
+### Email Processing Pipeline
+
+1. **Email Fetch**: EmailDigestProcessor fetches emails from Gmail API
+2. **Pre-filter**: Removes promotional categories and automated emails
+3. **AI Scoring**: Scores emails 1-10 for importance, keeps ≥5
+4. **Digest Creation**: Creates daily digest files with `email_digest_created` stage
+5. **Entity Resolution**: EntityResolver processes email digests (same as transcripts)
+6. **Summary Generation**: EmailSummaryGenerator creates AI summaries and updates monthly index
 
 ### Obsidian Form System
 
