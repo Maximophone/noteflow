@@ -3,6 +3,7 @@ from typing import Dict, Any, List, Tuple
 import aiofiles
 import os
 import re
+import asyncio
 import datetime
 import logging
 from collections import defaultdict
@@ -165,7 +166,8 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        return self.ai_model.message(message).content.strip()
+        response = await asyncio.to_thread(self.ai_model.message, message)
+        return response.content.strip()
 
     async def _generate_mention_logs_batch(self, transcript_content: str,
                                             mentioned_names: List[str], meeting_title: str) -> Dict[str, Dict]:
@@ -194,7 +196,8 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        response = self.tiny_ai_model.message(message).content.strip()
+        response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+        response_text = response.content.strip()
         
         # Parse JSON response
         try:
@@ -216,7 +219,7 @@ class InteractionLogger(NoteProcessor):
             return result
             
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse mention logs JSON: {e}. Response: {response[:200]}")
+            logger.error(f"Failed to parse mention logs JSON: {e}. Response: {response_text[:200]}")
             # Fallback: return empty dict (skip mentions if parsing fails)
             return {}
     
@@ -247,7 +250,8 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        response = self.tiny_ai_model.message(message).content.strip()
+        response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+        response_text = response.content.strip()
         
         # Parse JSON response
         try:
@@ -268,7 +272,7 @@ class InteractionLogger(NoteProcessor):
             return result
             
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse email participant logs JSON: {e}. Response: {response[:200]}")
+            logger.error(f"Failed to parse email participant logs JSON: {e}. Response: {response_text[:200]}")
             return {}
     
     async def _generate_email_mention_logs_batch(self, email_content: str,
@@ -298,7 +302,8 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        response = self.tiny_ai_model.message(message).content.strip()
+        response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+        response_text = response.content.strip()
         
         # Parse JSON response
         try:
@@ -319,7 +324,7 @@ class InteractionLogger(NoteProcessor):
             return result
             
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse email mention logs JSON: {e}. Response: {response[:200]}")
+            logger.error(f"Failed to parse email mention logs JSON: {e}. Response: {response_text[:200]}")
             return {}
 
     async def process_file(self, filename: str) -> None:
