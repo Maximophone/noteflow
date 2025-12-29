@@ -363,8 +363,8 @@ class MeetingSummaryGenerator(NoteProcessor):
             summary_lines = []
             in_summary = False
             for line in lines:
-                # Skip header, source, attendees, mentioned lines
-                if (line.startswith('#') or 
+                # Skip header (# YYYY-MM-DD or ## YYYY-MM-DD), source, attendees, mentioned lines
+                if (re.match(r'^#{1,2} \d{4}-\d{2}-\d{2}', line) or 
                     line.startswith('*Source:*') or 
                     line.startswith('**Attendees:**') or
                     line.startswith('**Mentioned:**')):
@@ -373,7 +373,8 @@ class MeetingSummaryGenerator(NoteProcessor):
                 if line.strip() == '---':
                     break
                 # Start collecting after we pass empty line following metadata
-                if in_summary or (line.strip() and not line.startswith('*') and not line.startswith('**')):
+                # H2 headers like ## Summary should be included
+                if in_summary or (line.strip() and not line.startswith('*Source:') and not line.startswith('**')):
                     in_summary = True
                     summary_lines.append(line)
             
