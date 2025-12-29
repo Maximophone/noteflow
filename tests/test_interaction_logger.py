@@ -52,6 +52,54 @@ class TestShouldProcess:
         frontmatter = {"category": "meeting"}
         result = mock_interaction_logger.should_process("test.md", frontmatter)
         assert result is False
+    
+    def test_processes_email_category(self, mock_interaction_logger):
+        """Should process email digests (no speaker mapping needed)."""
+        frontmatter = {"category": "email"}
+        result = mock_interaction_logger.should_process("2025-12-28 Emails.md", frontmatter)
+        assert result is True
+
+
+class TestEmailParticipantExtraction:
+    """Tests for extracting participants from email digests."""
+    
+    def test_extracts_from_to_participants(self, mock_interaction_logger):
+        """Should extract wikilinks from From/To lines."""
+        content = """
+*From:* [[John Smith]] (john@example.com) → *To:* [[Jane Doe]] (jane@example.com)
+
+Email body here.
+
+---
+
+*From:* [[Alice Brown]] → *To:* [[Bob Wilson]]
+
+Another email.
+"""
+        participants = mock_interaction_logger._extract_email_participants(content)
+        
+        assert "[[John Smith]]" in participants
+        assert "[[Jane Doe]]" in participants
+        assert "[[Alice Brown]]" in participants
+        assert "[[Bob Wilson]]" in participants
+        assert len(participants) == 4
+    
+    def test_deduplicates_participants(self, mock_interaction_logger):
+        """Should not include duplicate participants."""
+        content = """
+*From:* [[John Smith]] → *To:* [[Jane Doe]]
+
+First email.
+
+---
+
+*From:* [[John Smith]] → *To:* [[Jane Doe]]
+
+Reply email.
+"""
+        participants = mock_interaction_logger._extract_email_participants(content)
+        assert participants.count("[[John Smith]]") == 1
+        assert participants.count("[[Jane Doe]]") == 1
 
 
 class TestFindAILogsSection:

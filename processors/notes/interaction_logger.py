@@ -23,23 +23,44 @@ import traceback
 logger = setup_logger(__name__)
 
 class InteractionLogger(NoteProcessor):
-    """Processes transcripts with identified speakers and adds AI-generated logs to each person's note."""
+    """Processes meetings/emails and adds AI-generated logs to each person's note.
+    
+    Supports two modes:
+    - Meetings: Uses final_speaker_mapping for participants, processes speakers + mentions
+    - Emails: Extracts participants from From/To lines, processes correspondents + mentions
+    
+    For emails, instance must have custom required_stage set.
+    """
     stage_name = "interactions_logged"
-    required_stage = MeetingSummaryGenerator.stage_name
+    required_stage = MeetingSummaryGenerator.stage_name  # Override via instance for emails
 
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
         self.people_dir = PATHS.people_path
         
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
-        if 'final_speaker_mapping' not in frontmatter:
-            return False
-            
         category = frontmatter.get('category', '').lower()
-        if category != 'meeting':
+        
+        if category == 'meeting':
+            # Meetings require speaker mapping
+            if 'final_speaker_mapping' not in frontmatter:
+                return False
+        elif category == 'email':
+            # Emails don't need speaker mapping, participants extracted from content
+            pass
+        else:
             return False
-            
+        
         return True
+    
+    def _extract_email_participants(self, content: str) -> List[str]:
+        """Extract participant wikilinks from From/To lines in email digest."""
+        participants = set()
+        for line in content.split('\n'):
+            if '*From:*' in line or '*To:*' in line:
+                links = re.findall(r'\[\[[^\]]+\]\]', line)
+                participants.update(links)
+        return sorted(list(participants))
 
     async def _find_ai_logs_section(self, content: str) -> Tuple[bool, int, str]:
         """Find the AI Logs section in a note."""
@@ -198,13 +219,106 @@ class InteractionLogger(NoteProcessor):
             logger.error(f"Failed to parse mention logs JSON: {e}. Response: {response[:200]}")
             # Fallback: return empty dict (skip mentions if parsing fails)
             return {}
+    
+    async def _generate_email_log(self, email_content: str, person_content: str,
+                                   person_name: str, digest_date: str) -> str:
+        """Generate a log entry for an email correspondent using AI.
+        
+        Returns 'SKIP' if nothing meaningful to log.
+        """
+        filtered_person_content = await self._filter_future_logs(person_content, digest_date)
+        
+        if len(filtered_person_content) > 10000:
+            filtered_person_content = filtered_person_content[:10000] + "...[truncated]"
+        
+        prompt = get_prompt("email_interaction_log").format(
+            email_content=email_content,
+            person_name=person_name,
+            person_content=filtered_person_content,
+            digest_date=digest_date
+        )
+        
+        message = Message(
+            role="user",
+            content=[MessageContent(
+                type="text",
+                text=prompt
+            )]
+        )
+        
+        return self.ai_model.message(message).content.strip()
+    
+    async def _generate_email_mention_logs_batch(self, email_content: str,
+                                                  mentioned_names: List[str],
+                                                  digest_date: str) -> Dict[str, str]:
+        """Generate log entries for all mentioned people in emails in a single AI call.
+        
+        Returns:
+            Dict mapping person name to their notes string
+        """
+        if not mentioned_names:
+            return {}
+        
+        mentioned_list = "\n".join(f"- {name}" for name in mentioned_names)
+        
+        prompt = get_prompt("email_mention_log").format(
+            email_content=email_content,
+            mentioned_people_list=mentioned_list,
+            digest_date=digest_date
+        )
+        
+        message = Message(
+            role="user",
+            content=[MessageContent(
+                type="text",
+                text=prompt
+            )]
+        )
+        
+        response = self.tiny_ai_model.message(message).content.strip()
+        
+        # Parse JSON response
+        try:
+            import json
+            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response)
+            
+            # Convert to dict keyed by name
+            result = {}
+            for item in data:
+                name = item.get('name', '')
+                notes = item.get('notes', '')
+                if name and notes:
+                    result[name] = notes
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse email mention logs JSON: {e}. Response: {response[:200]}")
+            return {}
 
     async def process_file(self, filename: str) -> None:
-        """Process identified speakers in a transcript and add logs to their notes."""
-        logger.info(f"Processing interactions from transcript: {filename}")
+        """Process meetings or emails and add logs to person notes.
         
+        Dispatches to category-specific processing:
+        - Meetings: Uses speaker_mapping for participants
+        - Emails: Extracts participants from From/To lines
+        """
         content = await self.read_file(filename)
         frontmatter = parse_frontmatter_from_content(content)
+        category = frontmatter.get('category', '').lower()
+        
+        if category == 'email':
+            await self._process_email_file(filename, content, frontmatter)
+        else:  # meeting
+            await self._process_meeting_file(filename, content, frontmatter)
+    
+    async def _process_meeting_file(self, filename: str, content: str, frontmatter: Dict) -> None:
+        """Process meeting transcript and add logs to speaker/mention notes."""
+        logger.info(f"Processing interactions from meeting: {filename}")
+        
         transcript = read_text_from_content(content)
         
         meeting_date = frontmatter.get('date')
@@ -388,6 +502,197 @@ class InteractionLogger(NoteProcessor):
             remaining_mentions = len(mentioned_people) - len(logged_mentions)
             logger.info(f"{remaining_mentions} mentions still pending in {filename}. Stage not marked complete yet.")
             raise Exception(f"Not all mentions processed in {filename}. Will retry later.")
+    
+    async def _process_email_file(self, filename: str, content: str, frontmatter: Dict) -> None:
+        """Process email digest and add logs to correspondent/mention notes."""
+        logger.info(f"Processing interactions from email digest: {filename}")
+        
+        email_content = read_text_from_content(content)
+        
+        digest_date = frontmatter.get('date')
+        source_link = f"[[{filename.replace('.md', '')}]]"
+        
+        if not digest_date:
+            logger.error(f"Missing date in frontmatter for {filename}")
+            raise ValueError(f"Date is required in frontmatter for {filename}")
+        
+        # Convert date to string format
+        digest_date_str = str(digest_date)[:10]
+        
+        # Extract participants from From/To lines
+        all_participants = set(self._extract_email_participants(email_content))
+        
+        if not all_participants:
+            logger.warning(f"No participants found in email digest {filename}")
+            # Still continue to process mentions
+        
+        logged_interactions = frontmatter.get('logged_interactions', [])
+        pending_participants = [p for p in all_participants if p not in logged_interactions]
+        
+        # ===== Process Email Participants =====
+        if pending_participants:
+            logger.info(f"Processing {len(pending_participants)} email correspondents in {filename}")
+            
+            for person_id in pending_participants:
+                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_file_path = self.people_dir / f"{person_name}.md"
+                
+                if not person_file_path.exists():
+                    logger.warning(f"Person note not found: {person_file_path}")
+                    # Mark as logged to prevent retrying
+                    if 'logged_interactions' not in frontmatter:
+                        frontmatter['logged_interactions'] = []
+                    frontmatter['logged_interactions'].append(person_id)
+                    continue
+                
+                try:
+                    async with aiofiles.open(person_file_path, 'r', encoding='utf-8') as f:
+                        person_content = await f.read()
+                    
+                    log_content = await self._generate_email_log(
+                        email_content=email_content,
+                        person_content=person_content,
+                        person_name=person_name,
+                        digest_date=digest_date_str
+                    )
+                    
+                    # Check if AI returned SKIP for trivial emails
+                    if log_content.upper().strip() == 'SKIP':
+                        logger.info(f"Skipping {person_name} - trivial email content")
+                        if 'logged_interactions' not in frontmatter:
+                            frontmatter['logged_interactions'] = []
+                        frontmatter['logged_interactions'].append(person_id)
+                        continue
+                    
+                    success = await self._update_person_note(
+                        person_id=person_id,
+                        meeting_date=digest_date_str,
+                        source_link=source_link,
+                        log_content=log_content,
+                        category='email_participant'
+                    )
+                    
+                    if success:
+                        if 'logged_interactions' not in frontmatter:
+                            frontmatter['logged_interactions'] = []
+                        frontmatter['logged_interactions'].append(person_id)
+                        
+                        file_path = self.input_dir / filename
+                        updated_content = frontmatter_to_text(frontmatter) + email_content
+                        
+                        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                            await f.write(updated_content)
+                        
+                        os.utime(file_path, None)
+                        
+                        logger.info(f"Updated {filename} - logged email interaction for {person_name}")
+                    else:
+                        logger.error(f"Failed to update note for {person_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error generating email log for {person_name}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
+        
+        # Check if all participants processed
+        logged_interactions = frontmatter.get('logged_interactions', [])
+        all_participants_processed = all(p in logged_interactions for p in all_participants)
+        
+        if not all_participants_processed:
+            remaining = len(all_participants) - len(logged_interactions)
+            logger.info(f"{remaining} correspondents still pending in {filename}.")
+            raise Exception(f"Not all correspondents processed in {filename}. Will retry.")
+        
+        # ===== Process Email Mentions =====
+        resolved_entities = frontmatter.get('resolved_entities', [])
+        
+        mentioned_people = [
+            entity['resolved_link']
+            for entity in resolved_entities
+            if entity.get('entity_type') == 'people'
+            and entity.get('resolved_link')
+            and entity['resolved_link'] not in all_participants  # Not in From/To
+        ]
+        
+        # Deduplicate
+        mentioned_people = list(set(mentioned_people))
+        
+        logged_mentions = frontmatter.get('logged_mentions', [])
+        pending_mentions = [m for m in mentioned_people if m not in logged_mentions]
+        
+        if pending_mentions:
+            logger.info(f"Processing {len(pending_mentions)} email mentions in {filename}")
+            
+            pending_names = [m.replace('[[', '').replace(']]', '') for m in pending_mentions]
+            
+            # Single AI call for all mentions
+            mention_logs = await self._generate_email_mention_logs_batch(
+                email_content=email_content,
+                mentioned_names=pending_names,
+                digest_date=digest_date_str
+            )
+            
+            for person_id in pending_mentions:
+                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_file_path = self.people_dir / f"{person_name}.md"
+                
+                if not person_file_path.exists():
+                    logger.warning(f"Person note not found for mention: {person_file_path}")
+                    if 'logged_mentions' not in frontmatter:
+                        frontmatter['logged_mentions'] = []
+                    frontmatter['logged_mentions'].append(person_id)
+                    continue
+                
+                try:
+                    log_content = mention_logs.get(person_name, '')
+                    
+                    if not log_content:
+                        if 'logged_mentions' not in frontmatter:
+                            frontmatter['logged_mentions'] = []
+                        frontmatter['logged_mentions'].append(person_id)
+                        logger.info(f"Skipping {person_name} - no meaningful email mention")
+                        continue
+                    
+                    success = await self._update_person_note(
+                        person_id=person_id,
+                        meeting_date=digest_date_str,
+                        source_link=source_link,
+                        log_content=log_content,
+                        category='email_mention'
+                    )
+                    
+                    if success:
+                        if 'logged_mentions' not in frontmatter:
+                            frontmatter['logged_mentions'] = []
+                        frontmatter['logged_mentions'].append(person_id)
+                        
+                        file_path = self.input_dir / filename
+                        updated_content = frontmatter_to_text(frontmatter) + email_content
+                        
+                        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                            await f.write(updated_content)
+                        
+                        os.utime(file_path, None)
+                        
+                        logger.info(f"Updated {filename} - logged email mention for {person_name}")
+                    else:
+                        logger.error(f"Failed to update note for email mention {person_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error generating email mention log for {person_name}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    continue
+        
+        # Final completion check
+        logged_mentions = frontmatter.get('logged_mentions', [])
+        all_mentions_processed = all(m in logged_mentions for m in mentioned_people)
+        
+        if all_participants_processed and all_mentions_processed:
+            logger.info(f"All correspondents and mentions in {filename} processed.")
+        else:
+            remaining = len(mentioned_people) - len(logged_mentions)
+            logger.info(f"{remaining} email mentions still pending in {filename}.")
+            raise Exception(f"Not all email mentions processed in {filename}. Will retry.")
     
     async def _update_person_note(self, person_id: str, 
                                  meeting_date: str, 

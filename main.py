@@ -186,6 +186,11 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         index_dir=PATHS.email_digests,
     )
     processors["_email_summary_generator"] = email_summary_generator
+    
+    # Add interaction logger for email digests
+    email_interaction_logger = InteractionLogger(input_dir=PATHS.email_digests)
+    email_interaction_logger.required_stage = "email_summary_generated"  # Override class default
+    processors["_interaction_logger_emails"] = email_interaction_logger
 
     logger.info(f"Instantiated {len(processors)} processors.")
     return processors
