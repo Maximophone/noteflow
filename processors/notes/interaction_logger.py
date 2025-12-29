@@ -256,11 +256,11 @@ class InteractionLogger(NoteProcessor):
         # Parse JSON response
         try:
             import json
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
             else:
-                data = json.loads(response)
+                data = json.loads(response_text)
             
             # Convert to dict keyed by name
             result = {}
