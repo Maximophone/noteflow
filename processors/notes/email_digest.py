@@ -562,6 +562,54 @@ class EmailDigestProcessor:
         
         return ''.join(lines)
     
+    def _strip_quoted_content(self, body: str) -> str:
+        """Strip quoted email content from body.
+        
+        Removes content after patterns like:
+        - "On Mon, Dec 23, 2025 at 1:56 PM John wrote:"
+        - Lines starting with > (quoted text)
+        """
+        import re
+        
+        # Pattern 1: "On [date], [name] <email> wrote:" - cuts here
+        # Match "On" followed by date-like content up to "wrote:" 
+        on_wrote_pattern = r'\n+On [^<\n]*<[^>]+> wrote:\s*$'
+        match = re.search(on_wrote_pattern, body, re.MULTILINE | re.IGNORECASE)
+        if match:
+            body = body[:match.start()].rstrip()
+        
+        # Pattern 2: "On [weekday], [date], [name] <email> wrote:" with newline
+        on_wrote_pattern2 = r'\n+On [A-Za-z]{3}, [^\n]*wrote:\s*$'
+        match = re.search(on_wrote_pattern2, body, re.MULTILINE | re.IGNORECASE)
+        if match:
+            body = body[:match.start()].rstrip()
+        
+        # Pattern 3: Remove lines starting with > (quoted text)
+        # Only if they appear consecutively after a blank line
+        lines = body.split('\n')
+        result_lines = []
+        in_quote_block = False
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            if stripped.startswith('>'):
+                in_quote_block = True
+                continue  # Skip quoted lines
+            
+            if in_quote_block and stripped == '':
+                continue  # Skip blank lines within quote block
+            
+            if in_quote_block and not stripped.startswith('>'):
+                # Check if this looks like a quote header
+                if stripped.startswith('On ') and 'wrote:' in stripped.lower():
+                    continue
+                in_quote_block = False
+            
+            result_lines.append(line)
+        
+        return '\n'.join(result_lines).rstrip()
+    
     def _format_single_message(self, msg: Dict, is_new: bool) -> str:
         """Format a single message within a thread."""
         lines = []
@@ -612,9 +660,11 @@ class EmailDigestProcessor:
         
         lines.append("\n")
         
-        # Message body
+        # Message body - strip quoted content first
         body = msg.get('body', msg.get('snippet', ''))
         if body:
+            body = self._strip_quoted_content(body)
+            
             # Truncate if too long
             if len(body) > self.MAX_BODY_LENGTH:
                 body = body[:self.MAX_BODY_LENGTH] + "\n\n*[Message truncated]*"
