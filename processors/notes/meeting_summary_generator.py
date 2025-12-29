@@ -66,7 +66,7 @@ class MeetingSummaryGenerator(NoteProcessor):
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_meeting_summary' tag
-    START_DATE = "2025-12-24"
+    START_DATE = "2025-12-19"
     
     # Minimum lines to consider an index "sparse" (triggers previous month fallback)
     MIN_INDEX_LINES = 100

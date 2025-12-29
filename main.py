@@ -31,7 +31,6 @@ from processors.notes.coda import CodaProcessor
 from processors.notes.notion import NotionProcessor
 from processors.notes.markdownload import MarkdownloadProcessor
 from processors.notes.speaker_identifier import SpeakerIdentifier
-from processors.notes.meeting import MeetingProcessor
 from processors.notes.meeting_summary_generator import MeetingSummaryGenerator
 from processors.notes.transcript_classifier import TranscriptClassifier
 from processors.notes.conversation import ConversationProcessor
@@ -95,7 +94,6 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         NotionProcessor,
         MarkdownloadProcessor,
         SpeakerIdentifier,
-        MeetingProcessor,
         MeetingSummaryGenerator,
         TranscriptClassifier,
         ConversationProcessor,
@@ -131,8 +129,6 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
                 instance = cls(input_dir=PATHS.markdownload_path, output_dir=PATHS.sources_path, template_path=PATHS.source_template_path)
             elif cls is SpeakerIdentifier:
                 instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
-            elif cls is MeetingProcessor:
-                instance = cls(input_dir=PATHS.transcriptions, output_dir=PATHS.meetings, template_path=PATHS.meeting_template)
             elif cls is MeetingSummaryGenerator:
                 instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
             elif cls is TranscriptClassifier:

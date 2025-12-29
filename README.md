@@ -26,7 +26,6 @@ A document processing pipeline for audio transcription and note management.
 | `IdeaProcessor` | Extracts and logs ideas to a directory |
 | `IdeaCleanupProcessor` | Cleans up idea notes |
 | `TodoProcessor` | Extracts todo items from transcripts |
-| `MeetingProcessor` | Creates meeting notes from templates |
 | `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
 | `InteractionLogger` | Logs interactions per person |
 | `EmailDigestProcessor` | Fetches daily important emails from Gmail with AI filtering |

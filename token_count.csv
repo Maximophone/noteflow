@@ -974,3 +974,5 @@ gemini-3-pro-preview,input,39474,2025-12-28 23:28:14.954913,main.py
 gemini-3-pro-preview,output,776,2025-12-28 23:28:14.955894,main.py
 gemini-3-pro-preview,input,30642,2025-12-28 23:28:39.113425,main.py
 gemini-3-pro-preview,output,379,2025-12-28 23:28:39.115909,main.py
+gemini-3-flash-preview,input,489,2025-12-29 10:39:57.889108,main.py
+gemini-3-flash-preview,output,100,2025-12-29 10:39:57.889677,main.py
