@@ -117,30 +117,47 @@ class EmailSummaryGenerator(NoteProcessor):
     
     def _ensure_monthly_index_exists(self, email_date: str) -> Path:
         """Ensure monthly index file exists, create if needed."""
+        from datetime import datetime
+        
         index_path = self._get_monthly_index_path(email_date)
+        month = email_date[:7]  # YYYY-MM
         
         if not index_path.exists():
             self.index_dir.mkdir(parents=True, exist_ok=True)
-            index_path.write_text("", encoding='utf-8')
+            now = datetime.now().strftime('%Y-%m-%d %H:%M')
+            frontmatter = {
+                'type': 'email_index',
+                'month': month,
+                'created': now,
+                'updated': now,
+                'entry_count': 0,
+            }
+            content = frontmatter_to_text(frontmatter)
+            index_path.write_text(content, encoding='utf-8')
             logger.info("Created monthly email index: %s", index_path)
         
         return index_path
     
-    def _parse_monthly_index(self, index_path: Path) -> Dict[str, Dict[str, Any]]:
+    def _parse_monthly_index(self, index_path: Path) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
         """Parse monthly index into structured format.
         
         Returns:
-            Dict mapping source_link to entry data
+            Tuple of (entries dict, frontmatter dict)
         """
         if not index_path.exists():
-            return {}
+            return {}, {}
         
         content = index_path.read_text(encoding='utf-8')
+        
+        # Parse frontmatter if present
+        existing_frontmatter = parse_frontmatter_from_content(content) or {}
+        body_content = read_text_from_content(content)
+        
         entries = {}
         
         # Split by H1 headers with date pattern (# YYYY-MM-DD - ...)
         # This preserves other H1s like "# Email Digest - ..." as part of the content
-        sections = re.split(r'^# (\d{4}-\d{2}-\d{2})\s*-\s*', content, flags=re.MULTILINE)
+        sections = re.split(r'^# (\d{4}-\d{2}-\d{2})\s*-\s*', body_content, flags=re.MULTILINE)
         
         # sections[0] is content before first match (empty or garbage)
         # sections[1] is date from first match, sections[2] is content after first match
@@ -204,14 +221,17 @@ class EmailSummaryGenerator(NoteProcessor):
                     'entities': entities,
                 }
         
-        return entries
+        return entries, existing_frontmatter
     
     def _parse_wikilinks(self, text: str) -> List[str]:
         """Extract wikilinks from text."""
         return re.findall(r'\[\[[^\]]+\]\]', text)
     
-    def _rebuild_monthly_index(self, index_path: Path, entries: Dict[str, Dict[str, Any]]) -> None:
+    def _rebuild_monthly_index(self, index_path: Path, entries: Dict[str, Dict[str, Any]], 
+                                existing_frontmatter: Dict[str, Any] = None) -> None:
         """Rebuild monthly index file from entries, sorted by date (newest first)."""
+        from datetime import datetime
+        
         lines = []
         
         # Sort entries by date (newest first)
@@ -245,7 +265,16 @@ class EmailSummaryGenerator(NoteProcessor):
                 "",
             ])
         
-        index_path.write_text('\n'.join(lines), encoding='utf-8')
+        # Build frontmatter
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        frontmatter = existing_frontmatter.copy() if existing_frontmatter else {}
+        frontmatter['updated'] = now
+        frontmatter['entry_count'] = len(entries)
+        if 'type' not in frontmatter:
+            frontmatter['type'] = 'email_index'
+        
+        full_content = frontmatter_to_text(frontmatter) + '\n'.join(lines)
+        index_path.write_text(full_content, encoding='utf-8')
     
     def _update_monthly_index(self, summary: str, email_date: str, title: str,
                                source_link: str, participants: List[str] = None,
@@ -253,8 +282,8 @@ class EmailSummaryGenerator(NoteProcessor):
         """Update monthly index with entry."""
         index_path = self._ensure_monthly_index_exists(email_date)
         
-        # Parse existing entries
-        entries = self._parse_monthly_index(index_path)
+        # Parse existing entries and frontmatter
+        entries, existing_frontmatter = self._parse_monthly_index(index_path)
         
         # Check if this source already exists
         if source_link in entries:
@@ -270,7 +299,7 @@ class EmailSummaryGenerator(NoteProcessor):
         }
         
         # Rebuild file with sorted entries
-        self._rebuild_monthly_index(index_path, entries)
+        self._rebuild_monthly_index(index_path, entries, existing_frontmatter)
         
         logger.info("Updated monthly email index: %s", index_path)
     

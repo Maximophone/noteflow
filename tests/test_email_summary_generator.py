@@ -129,12 +129,13 @@ class TestMonthlyIndex:
         assert index_path.name == '2025-12 Email Index.md'
     
     def test_parse_monthly_index_empty(self, processor, temp_dirs):
-        """Should return empty dict for empty index."""
+        """Should return empty dicts for empty index."""
         index_path = temp_dirs / '2025-12 Email Index.md'
         index_path.write_text('')
         
-        entries = processor._parse_monthly_index(index_path)
+        entries, frontmatter = processor._parse_monthly_index(index_path)
         assert entries == {}
+        assert frontmatter == {}
     
     def test_parse_monthly_index_with_entries(self, processor, temp_dirs):
         """Should correctly parse index with entries."""
@@ -154,13 +155,23 @@ class TestMonthlyIndex:
         index_path = temp_dirs / '2025-12 Email Index.md'
         index_path.write_text(index_content)
         
-        entries = processor._parse_monthly_index(index_path)
+        entries, frontmatter = processor._parse_monthly_index(index_path)
         assert '[[2025-12-28 Emails]]' in entries
         entry = entries['[[2025-12-28 Emails]]']
         assert entry['date'] == '2025-12-28'
         assert entry['title'] == '2 threads, 4 emails'
         assert '[[John Smith]]' in entry['participants']
         assert '[[Project Alpha]]' in entry['entities']
+    
+    def test_ensure_monthly_index_creates_frontmatter(self, processor, temp_dirs):
+        """Should create index with proper frontmatter."""
+        index_path = processor._ensure_monthly_index_exists('2025-12-28')
+        content = index_path.read_text()
+        
+        assert 'type: email_index' in content
+        assert 'month: ' in content
+        assert 'created: ' in content
+        assert 'entry_count: 0' in content
     
     def test_rebuild_monthly_index(self, processor, temp_dirs):
         """Should rebuild index with sorted entries."""
