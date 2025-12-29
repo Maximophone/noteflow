@@ -157,12 +157,22 @@ class MeetingSummaryGenerator(NoteProcessor):
     
     def _ensure_monthly_index_exists(self, meeting_date: str) -> Path:
         """Ensure monthly index file exists, create if needed."""
+        from datetime import datetime
+        
         index_path = self._get_monthly_index_path(meeting_date)
+        month = meeting_date[:7]  # YYYY-MM
         
         if not index_path.exists():
-            year_month = meeting_date[:7]
-            template = f"# {year_month} Meetings\n\n"
-            index_path.write_text(template, encoding='utf-8')
+            now = datetime.now().strftime('%Y-%m-%d %H:%M')
+            frontmatter = {
+                'type': 'meeting_index',
+                'month': month,
+                'created': now,
+                'updated': now,
+                'entry_count': 0,
+            }
+            content = frontmatter_to_text(frontmatter)
+            index_path.write_text(content, encoding='utf-8')
             logger.info("Created monthly index: %s", index_path)
         
         return index_path
@@ -295,22 +305,27 @@ class MeetingSummaryGenerator(NoteProcessor):
     
     # ===== Monthly Index Operations =====
     
-    def _parse_monthly_index(self, index_path: Path) -> Dict[str, Dict[str, Any]]:
+    def _parse_monthly_index(self, index_path: Path) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
         """Parse monthly index into structured format.
         
         Returns:
-            Dict mapping source_link to entry data:
-            {"[[2025-12-27 Meeting]]": {"date": "2025-12-27", "title": "...", ...}}
+            Tuple of (entries dict, frontmatter dict)
+            entries: {"[[2025-12-27 Meeting]]": {"date": "2025-12-27", "title": "...", ...}}
         """
         if not index_path.exists():
-            return {}
+            return {}, {}
         
         content = index_path.read_text(encoding='utf-8')
+        
+        # Parse frontmatter if present
+        existing_frontmatter = parse_frontmatter_from_content(content) or {}
+        body_content = read_text_from_content(content)
+        
         entries = {}
         
         # Split content by # or ## headers (each entry starts with # YYYY-MM-DD or ## YYYY-MM-DD)
         # We allow both to support migration from old format
-        sections = re.split(r'\n(?=#{1,2} \d{4}-\d{2}-\d{2})', content)
+        sections = re.split(r'\n(?=#{1,2} \d{4}-\d{2}-\d{2})', body_content)
         
         for section in sections:
             stripped = section.strip()
@@ -372,11 +387,13 @@ class MeetingSummaryGenerator(NoteProcessor):
                 'entities': entities,
             }
         
-        return entries
+        return entries, existing_frontmatter
     
-    def _rebuild_monthly_index(self, index_path: Path, entries: Dict[str, Dict[str, Any]]) -> None:
+    def _rebuild_monthly_index(self, index_path: Path, entries: Dict[str, Dict[str, Any]],
+                                existing_frontmatter: Dict[str, Any] = None) -> None:
         """Rebuild monthly index file from entries, sorted by date (newest first)."""
-        # No file title - meeting entries are H1
+        from datetime import datetime
+        
         lines = []
         
         # Sort entries by date (newest first)
@@ -387,7 +404,7 @@ class MeetingSummaryGenerator(NoteProcessor):
         )
         
         for source_link, entry in sorted_entries:
-            # Build attendees and entities lines if present
+            # Build metadata lines
             metadata_lines = []
             if entry.get('attendees'):
                 metadata_lines.append(f"**Attendees:** {', '.join(entry['attendees'])}")
@@ -410,7 +427,16 @@ class MeetingSummaryGenerator(NoteProcessor):
                 "",
             ])
         
-        index_path.write_text('\n'.join(lines), encoding='utf-8')
+        # Build frontmatter
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        frontmatter = existing_frontmatter.copy() if existing_frontmatter else {}
+        frontmatter['updated'] = now
+        frontmatter['entry_count'] = len(entries)
+        if 'type' not in frontmatter:
+            frontmatter['type'] = 'meeting_index'
+        
+        full_content = frontmatter_to_text(frontmatter) + '\n'.join(lines)
+        index_path.write_text(full_content, encoding='utf-8')
     
     def _update_monthly_index(self, summary: str, meeting_date: str, meeting_title: str, 
                                source_link: str, attendees: List[str] = None, 
@@ -425,8 +451,8 @@ class MeetingSummaryGenerator(NoteProcessor):
         """
         index_path = self._ensure_monthly_index_exists(meeting_date)
         
-        # Parse existing entries
-        entries = self._parse_monthly_index(index_path)
+        # Parse existing entries and frontmatter
+        entries, existing_frontmatter = self._parse_monthly_index(index_path)
         
         # Check if this source already exists (for overwriting)
         if source_link in entries:
@@ -442,7 +468,7 @@ class MeetingSummaryGenerator(NoteProcessor):
         }
         
         # Rebuild file with sorted entries
-        self._rebuild_monthly_index(index_path, entries)
+        self._rebuild_monthly_index(index_path, entries, existing_frontmatter)
         
         logger.info("Updated monthly index: %s", index_path)
     
