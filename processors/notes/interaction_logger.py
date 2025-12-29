@@ -302,7 +302,9 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
+        logger.info(f"Sending email mention batch request for {len(mentioned_names)} people...")
         response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+        logger.info(f"Received email mention batch response")
         response_text = response.content.strip()
         
         # Parse JSON response
