@@ -32,10 +32,10 @@ For each person, note any of:
 Return a JSON array:
 ```json
 [
-  {
+  {{
     "name": "Person Name",
     "notes": "- First point\n- Second point"
-  }
+  }}
 ]
 ```
 
