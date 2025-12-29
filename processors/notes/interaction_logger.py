@@ -220,21 +220,22 @@ class InteractionLogger(NoteProcessor):
             # Fallback: return empty dict (skip mentions if parsing fails)
             return {}
     
-    async def _generate_email_log(self, email_content: str, person_content: str,
-                                   person_name: str, digest_date: str) -> str:
-        """Generate a log entry for an email correspondent using AI.
+    async def _generate_email_participant_logs_batch(self, email_content: str,
+                                                      correspondent_names: List[str],
+                                                      digest_date: str) -> Dict[str, str]:
+        """Generate log entries for all email correspondents in a single AI call.
         
-        Returns 'SKIP' if nothing meaningful to log.
+        Returns:
+            Dict mapping person name to their notes string
         """
-        filtered_person_content = await self._filter_future_logs(person_content, digest_date)
+        if not correspondent_names:
+            return {}
         
-        if len(filtered_person_content) > 10000:
-            filtered_person_content = filtered_person_content[:10000] + "...[truncated]"
+        correspondents_list = "\n".join(f"- {name}" for name in correspondent_names)
         
-        prompt = get_prompt("email_interaction_log").format(
+        prompt = get_prompt("email_participant_log_batch").format(
             email_content=email_content,
-            person_name=person_name,
-            person_content=filtered_person_content,
+            correspondents_list=correspondents_list,
             digest_date=digest_date
         )
         
@@ -246,7 +247,29 @@ class InteractionLogger(NoteProcessor):
             )]
         )
         
-        return self.ai_model.message(message).content.strip()
+        response = self.tiny_ai_model.message(message).content.strip()
+        
+        # Parse JSON response
+        try:
+            import json
+            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response)
+            
+            # Convert to dict keyed by name
+            result = {}
+            for item in data:
+                name = item.get('name', '')
+                notes = item.get('notes', '')
+                if name and notes:
+                    result[name] = notes
+            return result
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse email participant logs JSON: {e}. Response: {response[:200]}")
+            return {}
     
     async def _generate_email_mention_logs_batch(self, email_content: str,
                                                   mentioned_names: List[str],
@@ -529,10 +552,21 @@ class InteractionLogger(NoteProcessor):
         logged_interactions = frontmatter.get('logged_interactions', [])
         pending_participants = [p for p in all_participants if p not in logged_interactions]
         
-        # ===== Process Email Participants =====
+        # ===== Process Email Participants (Batch) =====
         if pending_participants:
             logger.info(f"Processing {len(pending_participants)} email correspondents in {filename}")
             
+            # Get names for batch processing
+            pending_names = [p.replace('[[', '').replace(']]', '') for p in pending_participants]
+            
+            # Single AI call for all participants
+            participant_logs = await self._generate_email_participant_logs_batch(
+                email_content=email_content,
+                correspondent_names=pending_names,
+                digest_date=digest_date_str
+            )
+            
+            # Process each participant with batch results
             for person_id in pending_participants:
                 person_name = person_id.replace('[[', '').replace(']]', '')
                 person_file_path = self.people_dir / f"{person_name}.md"
@@ -546,22 +580,14 @@ class InteractionLogger(NoteProcessor):
                     continue
                 
                 try:
-                    async with aiofiles.open(person_file_path, 'r', encoding='utf-8') as f:
-                        person_content = await f.read()
+                    log_content = participant_logs.get(person_name, '')
                     
-                    log_content = await self._generate_email_log(
-                        email_content=email_content,
-                        person_content=person_content,
-                        person_name=person_name,
-                        digest_date=digest_date_str
-                    )
-                    
-                    # Check if AI returned SKIP for trivial emails
-                    if log_content.upper().strip() == 'SKIP':
-                        logger.info(f"Skipping {person_name} - trivial email content")
+                    if not log_content:
+                        # AI decided nothing meaningful to log for this person
                         if 'logged_interactions' not in frontmatter:
                             frontmatter['logged_interactions'] = []
                         frontmatter['logged_interactions'].append(person_id)
+                        logger.info(f"Skipping {person_name} - no meaningful email content")
                         continue
                     
                     success = await self._update_person_note(
@@ -590,7 +616,7 @@ class InteractionLogger(NoteProcessor):
                         logger.error(f"Failed to update note for {person_id}")
                     
                 except Exception as e:
-                    logger.error(f"Error generating email log for {person_name}: {str(e)}")
+                    logger.error(f"Error updating log for {person_name}: {str(e)}")
                     logger.error(traceback.format_exc())
                     continue
         
