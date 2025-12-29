@@ -61,6 +61,7 @@ class EmailDigestProcessor:
         self.overwrite_existing = overwrite_existing
         self.gmail = GmailUtils()
         self.ai_model = AI(SMALL_MODEL)
+        self._regeneration_mode = False  # Set True in process_all if state was deleted
         
         # Ensure directories exist
         self.output_dir.mkdir(parents=True, exist_ok=True)

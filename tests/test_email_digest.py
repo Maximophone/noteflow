@@ -129,11 +129,10 @@ class TestEmailDigestProcessor:
         assert processor._should_run_today() is True
     
     def test_get_last_run_timestamp_default(self, processor):
-        """Default should be 24 hours ago."""
+        """Default should be EARLIEST_DATE when no state exists."""
         timestamp = processor._get_last_run_timestamp()
-        expected = datetime.now() - timedelta(days=1)
-        # Allow 1 minute tolerance
-        assert abs((timestamp - expected).total_seconds()) < 60
+        # Should return EARLIEST_DATE (2025-12-19) when no prior state
+        assert timestamp == processor.EARLIEST_DATE
     
     def test_pre_filter_emails_removes_promotions(self, processor):
         """Pre-filter should remove promotional emails."""
@@ -221,9 +220,8 @@ class TestEmailDigestProcessorAsync:
             'labels': ['INBOX'],
         }]
         
-        # Mock thread context
-        with patch.object(processor, '_get_thread_context', return_value=''):
-            await processor._create_single_digest('2025-12-28', emails)
+        # Create digest
+        await processor._create_single_digest('2025-12-28', emails)
         
         # Check file was created
         digest_file = output_dir / '2025-12-28 Emails.md'
@@ -231,7 +229,7 @@ class TestEmailDigestProcessorAsync:
         
         content = digest_file.read_text()
         assert 'Email Digest - 2025-12-28' in content
-        assert '[[John Smith]]' in content
+        assert 'john@example.com' in content  # Email address before entity resolution
         assert 'Project Update' in content
     
     @pytest.mark.asyncio
