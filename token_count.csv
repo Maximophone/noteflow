@@ -1264,3 +1264,15 @@ gemini-3-flash-preview,input,541,2025-12-31 14:00:06.608655,main.py
 gemini-3-flash-preview,output,1,2025-12-31 14:00:06.609275,main.py
 claude-opus-4-5-20251101,input,12014,2025-12-31 14:03:08.304363,main.py
 claude-opus-4-5-20251101,output,760,2025-12-31 14:03:08.305028,main.py
+gemini-3-flash-preview,input,19755,2025-12-31 14:09:28.600417,main.py
+gemini-3-flash-preview,output,709,2025-12-31 14:09:28.603433,main.py
+gemini-3-pro-preview,input,9819,2025-12-31 14:11:44.089566,main.py
+gemini-3-pro-preview,output,327,2025-12-31 14:11:44.092196,main.py
+gemini-3-pro-preview,input,7482,2025-12-31 14:12:01.365503,main.py
+gemini-3-pro-preview,output,257,2025-12-31 14:12:01.369362,main.py
+gemini-3-flash-preview,input,7308,2025-12-31 14:12:06.920625,main.py
+gemini-3-flash-preview,output,266,2025-12-31 14:12:06.921070,main.py
+gemini-3-flash-preview,input,1909,2025-12-31 14:12:18.318582,main.py
+gemini-3-flash-preview,output,619,2025-12-31 14:12:18.320759,main.py
+claude-opus-4-5-20251101,input,9576,2025-12-31 14:12:40.419788,main.py
+claude-opus-4-5-20251101,output,632,2025-12-31 14:12:40.420160,main.py
