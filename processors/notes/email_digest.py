@@ -419,7 +419,14 @@ class EmailDigestProcessor:
             return emails, triage
     
     async def _create_digest_files(self, emails: List[Dict]) -> None:
-        """Create daily digest files with thread context."""
+        """Create daily digest files with thread context.
+        
+        Only processes emails from COMPLETED days (not today).
+        Today's emails will be processed tomorrow to ensure we capture
+        all emails for a given day.
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        
         # Group emails by date
         by_date: Dict[str, List[Dict]] = {}
         
@@ -433,6 +440,16 @@ class EmailDigestProcessor:
             if date_key not in by_date:
                 by_date[date_key] = []
             by_date[date_key].append(email)
+        
+        # Filter out today's emails - they'll be processed tomorrow
+        if today in by_date:
+            today_count = len(by_date[today])
+            logger.info(f"Deferring {today_count} emails from today ({today}) to next run")
+            del by_date[today]
+        
+        if not by_date:
+            logger.info("No emails from completed days to process")
+            return
         
         # Create a digest file for each date
         for date_str, date_emails in sorted(by_date.items()):
