@@ -4,6 +4,50 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2025-12-31: Email Interaction Logging & Digest Fixes
+
+### Features Added
+
+**1. Email Interaction Logging**
+Extended `InteractionLogger` to handle email digests:
+- Uses `email_participant` and `email_mention` categories
+- Batched AI calls (2 total per digest): one for participants, one for mentions
+- Prompts emphasize NEW messages only (not quoted thread history)
+- Uses `tiny_ai_model` for cost efficiency
+
+**2. Quote Stripping in Email Digests**
+Added `_strip_quoted_content()` to `EmailDigestProcessor`:
+- Detects `On X wrote:` patterns and cuts content after
+- Removes `>` quoted lines
+- Dramatically reduces digest file sizes (2-email thread: 2800→~200 lines)
+
+**3. Day Completion Logic**
+Fixed critical bug where same-day emails were lost:
+- **Problem**: If NoteFlow ran in morning, afternoon emails dated same day were skipped (file existed)
+- **Solution**: Only process completed days - today's emails deferred to next run
+- Log: `"Deferring X emails from today (YYYY-MM-DD) to next run"`
+
+### Bug Fixes
+
+**1. Async AI Calls Blocking Event Loop**
+- Wrapped all AI calls with `asyncio.to_thread()` to prevent Discord heartbeat timeouts
+- Fixed 4 occurrences of `response` vs `response_text` variable naming after refactor
+
+**2. JSON Template Escaping**
+- Escaped `{}` in prompt files to `{{}}` for Python `.format()` compatibility
+
+### Files Created
+- `prompts/email_participant_log_batch.md` - Batch prompt for correspondents
+- `prompts/email_mention_log.md` - Batch prompt for mentioned people
+
+### Files Modified
+- `processors/notes/interaction_logger.py` - Email support, async AI calls
+- `processors/notes/email_digest.py` - Quote stripping, day completion logic
+- `main.py` - Added email InteractionLogger instance
+
+---
+
+
 ## 2025-12-28: Email Summary Generator & Entity Resolution for Emails
 
 ### Problem
