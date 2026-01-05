@@ -53,6 +53,9 @@ class AudioTranscriber:
         # Add AI model for title generation
         self.ai_model = AI(BIG_MODEL)
         self.prompt_title = get_prompt("transcript_title")
+        
+        # Limit to 1 concurrent AssemblyAI call to avoid network overload
+        self._transcribe_semaphore = asyncio.Semaphore(1)
 
     def generate_title(self, text: str) -> str:
         message = Message(
@@ -66,10 +69,12 @@ class AudioTranscriber:
         
     async def transcribe_audio_file(self, file_path: Path) -> assemblyai.Transcript:
         """Transcribe a single audio file using AssemblyAI."""
-        # Run in thread pool to avoid blocking the event loop (prevents Discord heartbeat issues)
-        transcript = await asyncio.to_thread(
-            self.transcriber.transcribe, str(file_path), self.config
-        )
+        # Limit to 1 concurrent call to avoid network overload on slow connections
+        async with self._transcribe_semaphore:
+            # Run in thread pool to avoid blocking the event loop (prevents Discord heartbeat issues)
+            transcript = await asyncio.to_thread(
+                self.transcriber.transcribe, str(file_path), self.config
+            )
         return transcript
     
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
