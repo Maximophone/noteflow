@@ -38,7 +38,7 @@ class AudioTranscriber:
         
         # Set up AssemblyAI
         assemblyai.settings.api_key = api_key
-        assemblyai.settings.http_timeout = 600  # 10 minutes for slow connections
+        assemblyai.settings.http_timeout = 900  # 15 minutes for slow connections
         self.transcriber = assemblyai.Transcriber()
         self.config = assemblyai.TranscriptionConfig(
             speaker_labels=True,
