@@ -38,6 +38,7 @@ class AudioTranscriber:
         
         # Set up AssemblyAI
         assemblyai.settings.api_key = api_key
+        assemblyai.settings.http_timeout = 600  # 10 minutes for slow connections
         self.transcriber = assemblyai.Transcriber()
         self.config = assemblyai.TranscriptionConfig(
             speaker_labels=True,
@@ -65,8 +66,10 @@ class AudioTranscriber:
         
     async def transcribe_audio_file(self, file_path: Path) -> assemblyai.Transcript:
         """Transcribe a single audio file using AssemblyAI."""
-        # TODO: Make this properly async when AssemblyAI supports it
-        transcript = self.transcriber.transcribe(str(file_path), self.config)
+        # Run in thread pool to avoid blocking the event loop (prevents Discord heartbeat issues)
+        transcript = await asyncio.to_thread(
+            self.transcriber.transcribe, str(file_path), self.config
+        )
         return transcript
     
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
