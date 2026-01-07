@@ -77,6 +77,20 @@ class AudioTranscriber:
             )
         return transcript
     
+    async def delete_transcript_data(self, transcript_id: str) -> None:
+        """Delete transcript and audio data from AssemblyAI's servers.
+        
+        This removes all data associated with the transcript, including the
+        uploaded audio file if it was uploaded via AssemblyAI's /upload endpoint.
+        """
+        try:
+            await asyncio.to_thread(
+                assemblyai.Transcript.delete_by_id, transcript_id
+            )
+            logger.info("Deleted transcript data from AssemblyAI: %s", transcript_id)
+        except Exception as e:
+            logger.warning("Failed to delete transcript data from AssemblyAI: %s - %s", transcript_id, str(e))
+    
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
         # Skip hidden files (like .DS_Store on macOS)
         if filename.startswith('.'):
@@ -115,6 +129,14 @@ class AudioTranscriber:
                 for utt in transcript.utterances
             )
             
+            # Store transcript data we need before deletion
+            transcript_text = transcript.text
+            transcript_json = transcript.json_response
+            transcript_id = transcript.id
+            
+            # Delete transcript and audio data from AssemblyAI's servers
+            await self.delete_transcript_data(transcript_id)
+            
             title = None
             source_tags = [] # Initialize source_tags
             # Check if original filename starts with date pattern
@@ -134,12 +156,12 @@ class AudioTranscriber:
             
             if title is None:
                 # Generate new title if none found in filename or after cleaning
-                title = self.generate_title(transcript.text)
+                title = self.generate_title(transcript_text)
             
             # Ensure title is not empty after potential cleaning, fallback if needed
             if not title:
                  logger.warning("Title became empty after tag removal for file %s. Using generated title.", filename)
-                 title = self.generate_title(transcript.text)
+                 title = self.generate_title(transcript_text)
 
             logger.info("Processing title: %s", title)
             logger.info("Extracted source tags: %s", source_tags)
@@ -152,7 +174,7 @@ class AudioTranscriber:
             json_filename = f"{base_filename}.json"
             json_path = self.output_dir / json_filename
             async with aiofiles.open(json_path, "w") as f:
-                await f.write(json.dumps(transcript.json_response, indent=2))
+                await f.write(json.dumps(transcript_json, indent=2))
             
             logger.debug("Saved JSON: %s", json_filename)
 
