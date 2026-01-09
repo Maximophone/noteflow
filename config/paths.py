@@ -2,6 +2,10 @@ import os
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
+from dotenv import load_dotenv
+
+# Load .env before any paths use os.environ
+load_dotenv()
 
 
 def get_default_google_drive_path() -> Path:

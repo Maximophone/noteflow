@@ -103,6 +103,51 @@ With custom log level:
 python main.py --log-level DEBUG
 ```
 
+### Running as a Background Service (macOS)
+
+NoteFlow can run automatically in the background using macOS launchd. A plist file is included in the repository.
+
+#### Installation
+
+1. Copy the plist to LaunchAgents:
+```bash
+cp com.maximefournes.noteflow.plist ~/Library/LaunchAgents/
+```
+
+2. Load the service:
+```bash
+launchctl load ~/Library/LaunchAgents/com.maximefournes.noteflow.plist
+```
+
+The service will now start automatically on login and restart if it crashes.
+
+#### Managing the Service
+
+```bash
+# Check if running (shows PID if active)
+launchctl list | grep noteflow
+
+# Stop the service
+launchctl unload ~/Library/LaunchAgents/com.maximefournes.noteflow.plist
+
+# Start the service
+launchctl load ~/Library/LaunchAgents/com.maximefournes.noteflow.plist
+
+# Restart the service (after code changes)
+launchctl unload ~/Library/LaunchAgents/com.maximefournes.noteflow.plist && launchctl load ~/Library/LaunchAgents/com.maximefournes.noteflow.plist
+```
+
+#### Viewing Logs
+
+All output (stdout and stderr) is written to `logs/noteflow.log`:
+```bash
+# Follow logs in real-time
+tail -f logs/noteflow.log
+
+# View last 50 lines
+tail -50 logs/noteflow.log
+```
+
 ### Directory Structure
 
 The service expects the following directory structure (configurable via environment variables):
