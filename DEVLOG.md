@@ -4,6 +4,49 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-01-12: Discord Notification Consolidation
+
+### Problem
+Multiple processors (`SpeakerIdentifier`, `EntityResolver`, `MeetingSummaryGenerator`) each sent individual Discord notifications when creating validation forms. This caused notification spam when multiple processors triggered for the same file, and scattered Discord logic across the codebase.
+
+### Solution
+Consolidated all Discord notifications into `InboxGenerator`:
+- Removed `discord_io` parameter from all three processors
+- `InboxGenerator` now tracks pending items across runs using in-memory state
+- Sends **one consolidated notification** when new pending items are detected
+- Batches multiple files into a single message (up to 5 shown, rest summarized)
+
+### Key Design Decisions
+- **State tracking in memory**: Uses `_known_pending_items` dict to compare current vs previous scan
+- **No persistent state file**: State resets on service restart (acceptable tradeoff for simplicity)
+- **Error notifications removed**: The inbox markdown file already shows ⚠️ status for errors
+
+### Notification Format
+Single file:
+```
+📝 **NoteFlow: Action Required**
+File: `meeting.md`
+Pending: Speaker ID
+```
+
+Multiple files:
+```
+📝 **NoteFlow: 3 files need your attention**
+• `file1.md` — Speaker ID
+• `file2.md` — Entity Resolution ⚠️
+• `file3.md` — Meeting Summary
+```
+
+### Files Modified
+- `processors/notes/speaker_identifier.py` - Removed Discord logic
+- `processors/notes/entity_resolver.py` - Removed Discord logic
+- `processors/notes/meeting_summary_generator.py` - Removed Discord logic
+- `processors/notes/inbox_generator.py` - Added Discord notification with state tracking
+- `main.py` - Updated processor instantiations
+- `tests/test_*.py` - Updated fixtures for new API
+
+---
+
 ## 2025-12-31: Email Interaction Logging & Digest Fixes
 
 ### Features Added

@@ -128,9 +128,9 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
             elif cls is MarkdownloadProcessor:
                 instance = cls(input_dir=PATHS.markdownload_path, output_dir=PATHS.sources_path, template_path=PATHS.source_template_path)
             elif cls is SpeakerIdentifier:
-                instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
+                instance = cls(input_dir=PATHS.transcriptions)
             elif cls is MeetingSummaryGenerator:
-                instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
+                instance = cls(input_dir=PATHS.transcriptions)
             elif cls is TranscriptClassifier:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is ConversationProcessor:
@@ -146,7 +146,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
             elif cls is NotionUploadProcessor:
                 instance = cls(input_dir=PATHS.transcriptions, database_url=PATHS.meetings_notion_database_url)
             elif cls is EntityResolver:
-                instance = cls(input_dir=PATHS.transcriptions, discord_io=discord_io)
+                instance = cls(input_dir=PATHS.transcriptions)
 
             processors[cls.stage_name] = instance
 
@@ -161,7 +161,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     inbox_generator = InboxGenerator(
         scan_dirs=[PATHS.transcriptions, PATHS.email_digests],
         inbox_path=PATHS.inbox_path,
-        vault_path=PATHS.vault_path
+        vault_path=PATHS.vault_path,
+        discord_io=discord_io
     )
     processors["_inbox_generator"] = inbox_generator
 
@@ -175,7 +176,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     
     # Add entity resolver for email digests (separate from transcript resolver)
     email_entity_resolver = EntityResolver(
-        input_dir=PATHS.email_digests, discord_io=discord_io
+        input_dir=PATHS.email_digests
     )
     email_entity_resolver.required_stage = "email_digest_created"  # Override class default
     processors["_entity_resolver_emails"] = email_entity_resolver

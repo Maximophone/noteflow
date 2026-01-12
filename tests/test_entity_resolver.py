@@ -13,7 +13,6 @@ from processors.notes.entity_resolver import EntityResolver
 @pytest.fixture
 def mock_resolver(mock_ai, tmp_path):
     """Create an EntityResolver with mocked dependencies."""
-    mock_discord = MagicMock()
     input_dir = tmp_path / "transcriptions"
     input_dir.mkdir(parents=True)
     
@@ -21,7 +20,7 @@ def mock_resolver(mock_ai, tmp_path):
     with patch("processors.notes.entity_resolver.PATHS") as mock_paths:
         mock_paths.vault_path = tmp_path / "vault"
         mock_paths.vault_path.mkdir(parents=True)
-        resolver = EntityResolver(input_dir, mock_discord)
+        resolver = EntityResolver(input_dir)
         yield resolver
 
 class TestEntityReferenceParsing:

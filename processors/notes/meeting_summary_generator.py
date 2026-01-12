@@ -19,8 +19,6 @@ from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
-from config.user_config import TARGET_DISCORD_USER_ID
-from integrations.discord import DiscordIOCore
 from prompts.prompts import get_prompt
 
 logger = setup_logger(__name__)
@@ -75,9 +73,8 @@ class MeetingSummaryGenerator(NoteProcessor):
     # Maximum lines to load per attendee note
     MAX_ATTENDEE_LINES = 100
     
-    def __init__(self, input_dir: Path, discord_io: DiscordIOCore):
+    def __init__(self, input_dir: Path):
         super().__init__(input_dir)
-        self.discord_io = discord_io
         self.people_dir = PATHS.people_path
 
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
@@ -546,19 +543,7 @@ class MeetingSummaryGenerator(NoteProcessor):
             await f.write(full_content)
         os.utime(self.input_dir / filename, None)
         
-        # Send Discord notification
-        try:
-            meeting_title = frontmatter.get('title', filename)
-            dm_text = (
-                f"📝 **Meeting Summary Ready for Review**\n"
-                f"File: `{filename}`\n"
-                f"Meeting: {meeting_title}\n"
-                f"Please review, edit if needed, and check 'Finished' in Obsidian."
-            )
-            await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
-            logger.info("Sent Discord notification for: %s", filename)
-        except Exception as e:
-            logger.warning("Failed to send Discord notification: %s", e)
+        logger.info("Created meeting summary form for: %s", filename)
     
     async def _substage3_process_results(
         self, filename: str, frontmatter: Dict, content: str

@@ -20,8 +20,6 @@ from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
-from config.user_config import TARGET_DISCORD_USER_ID
-from integrations.discord import DiscordIOCore
 from prompts.prompts import get_prompt
 
 logger = setup_logger(__name__)
@@ -73,10 +71,9 @@ class EntityResolver(NoteProcessor):
     SUMMARY_START = "<!-- summary:entity_resolution:start -->"
     SUMMARY_END = "<!-- summary:entity_resolution:end -->"
     
-    def __init__(self, input_dir: Path, discord_io: DiscordIOCore):
+    def __init__(self, input_dir: Path):
         super().__init__(input_dir)
         super().__init__(input_dir)
-        self.discord_io = discord_io
         self.entity_reference_path = PATHS.vault_path / "Entity Reference.md"
         # Use a more powerful model for entity resolution as per user request
         self.entity_model = AI("opus4.5")
@@ -497,23 +494,7 @@ class EntityResolver(NoteProcessor):
             await f.write(full_content)
         os.utime(self.input_dir / filename, None)
         
-        # Send Discord notification
-        try:
-            logger.info("Sending Discord notification for: %s", filename)
-            dm_text = (
-                f"📝 **Entity Resolution Required**\n"
-                f"File: `{filename}`\n"
-                f"Entities detected: {len(entities)}\n"
-                f"Please review and confirm entity mappings in Obsidian."
-            )
-            success = await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
-            
-            if not success:
-                logger.warning("Failed to send Discord DM for: %s", filename)
-            else:
-                logger.info("Successfully sent Discord notification for: %s", filename)
-        except Exception as e:
-            logger.warning("Error sending Discord notification for %s: %s", filename, e)
+        logger.info("Created entity resolution form for: %s", filename)
     
     async def _substage3_process_results(
         self, filename: str, frontmatter: Dict, content: str
@@ -554,18 +535,6 @@ class EntityResolver(NoteProcessor):
             async with aiofiles.open(self.input_dir / filename, "w", encoding='utf-8') as f:
                 await f.write(updated_content)
             os.utime(self.input_dir / filename, None)
-            
-            try:
-                error_summary = "; ".join(e.message for e in errors)
-                dm_text = (
-                    f"⚠️ **Entity Resolution Validation Errors**\n"
-                    f"File: `{filename}`\n"
-                    f"Errors: {error_summary}\n"
-                    f"Please fix and check Finished again."
-                )
-                await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
-            except Exception as e:
-                logger.warning("Failed to send Discord notification: %s", e)
             
             raise ResultsNotReadyError(f"Validation errors in: {filename}")
         

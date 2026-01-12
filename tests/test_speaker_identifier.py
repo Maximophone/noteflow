@@ -10,11 +10,11 @@ from processors.notes.speaker_identifier import SpeakerIdentifier
 
 
 @pytest.fixture
-def mock_speaker_identifier(mock_ai, mock_discord, tmp_path):
+def mock_speaker_identifier(mock_ai, tmp_path):
     """Create a SpeakerIdentifier with mocked dependencies."""
     input_dir = tmp_path / "transcriptions"
     input_dir.mkdir(parents=True)
-    identifier = SpeakerIdentifier(input_dir, mock_discord)
+    identifier = SpeakerIdentifier(input_dir)
     yield identifier
 
 

@@ -9,8 +9,7 @@ from .base import NoteProcessor
 from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
-from config.user_config import TARGET_DISCORD_USER_ID, USER_NAME, USER_ORGANIZATION
-from integrations.discord import DiscordIOCore
+from config.user_config import USER_NAME, USER_ORGANIZATION
 from .transcript_classifier import TranscriptClassifier
 from prompts.prompts import get_prompt
 
@@ -64,9 +63,8 @@ class SpeakerIdentifier(NoteProcessor):
     stage_name = "speakers_identified"
     required_stage = TranscriptClassifier.stage_name
 
-    def __init__(self, input_dir: Path, discord_io: DiscordIOCore):
+    def __init__(self, input_dir: Path):
         super().__init__(input_dir)
-        self.discord_io = discord_io
         
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
         """
@@ -475,25 +473,6 @@ class SpeakerIdentifier(NoteProcessor):
             await f.write(full_content)
         os.utime(self.input_dir / filename, None)
         
-        # Send Discord notification
-        try:
-            logger.info("Sending Discord notification for: %s", filename)
-            file_path = self.input_dir / filename
-            dm_text = (
-                f"📝 **Speaker identification needed**\n"
-                f"Please review and fill in the speaker names for: `{filename}`\n"
-                f"Open the file in Obsidian and complete the validation section."
-            )
-            success = await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
-            
-            if not success:
-                logger.warning("Failed to send Discord DM for: %s", filename)
-            else:
-                logger.info("Successfully sent Discord notification for: %s", filename)
-        except Exception as e:
-            logger.warning("Error sending Discord notification for %s: %s", filename, str(e))
-            # Don't fail the whole process just because Discord notification failed
-        
         logger.info("Created validation section for: %s", filename)
 
     async def _substage3_process_results(self, filename: str, frontmatter: Dict, content: str) -> None:
@@ -545,18 +524,7 @@ class SpeakerIdentifier(NoteProcessor):
                 await f.write(updated_content)
             os.utime(self.input_dir / filename, None)
             
-            # Send Discord notification about the errors
-            try:
-                error_summary = "; ".join(e.message for e in errors)
-                dm_text = (
-                    f"⚠️ **Validation errors in speaker identification**\n"
-                    f"File: `{filename}`\n"
-                    f"Errors: {error_summary}\n"
-                    f"Please fix and check Finished again."
-                )
-                await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
-            except Exception as e:
-                logger.warning("Failed to send Discord notification: %s", e)
+
             
             raise ResultsNotReadyError(f"Validation errors in: {filename}")
         

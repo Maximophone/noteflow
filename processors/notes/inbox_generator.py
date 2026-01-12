@@ -2,16 +2,19 @@
 NoteFlow Inbox Generator
 
 Generates a markdown file showing all notes awaiting user input,
-grouped by file and sorted by date.
+grouped by file and sorted by date. Also sends consolidated Discord
+notifications when new pending items are detected.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from datetime import datetime
 import re
 
 from config.paths import PATHS
 from config.logging_config import setup_logger
+from config.user_config import TARGET_DISCORD_USER_ID
+from integrations.discord import DiscordIOCore
 from ..common.frontmatter import read_frontmatter_from_file
 
 logger = setup_logger(__name__)
@@ -33,10 +36,14 @@ FORM_MARKERS = {
 
 
 class InboxGenerator:
-    """Generates a markdown inbox showing files awaiting user input."""
+    """Generates a markdown inbox showing files awaiting user input.
+    
+    Also sends consolidated Discord notifications when new pending items are detected,
+    reducing notification spam when multiple processors trigger simultaneously.
+    """
     
     def __init__(self, scan_dir: Path = None, inbox_path: Path = None, vault_path: Path = None, 
-                 scan_dirs: List[Path] = None):
+                 scan_dirs: List[Path] = None, discord_io: DiscordIOCore = None):
         """
         Initialize the inbox generator.
         
@@ -45,6 +52,7 @@ class InboxGenerator:
             inbox_path: Path to write the inbox markdown file
             vault_path: Obsidian vault root for computing relative paths
             scan_dirs: List of directories to scan for pending forms
+            discord_io: Discord I/O core for sending notifications
         """
         # Support both single dir and list of dirs
         if scan_dirs:
@@ -56,6 +64,11 @@ class InboxGenerator:
         
         self.inbox_path = inbox_path
         self.vault_path = vault_path
+        self.discord_io = discord_io
+        
+        # Track known pending items to detect new ones
+        # Key is file path string, value is set of pending form types
+        self._known_pending_items: Dict[str, Set[str]] = {}
     
     def _has_error_callout(self, content: str, form_marker: str) -> bool:
         """Check if a form section contains an error callout."""
@@ -161,6 +174,73 @@ class InboxGenerator:
         
         return results
     
+    def _find_new_items(self, items: List[Dict]) -> List[Dict]:
+        """Compare current items with known items to find new pending forms.
+        
+        Returns:
+            List of items that are new (not previously seen)
+        """
+        new_items = []
+        current_pending: Dict[str, Set[str]] = {}
+        
+        for item in items:
+            path_key = str(item['path'])
+            current_forms = set(item['forms'])
+            current_pending[path_key] = current_forms
+            
+            # Check if this file+forms combination is new
+            known_forms = self._known_pending_items.get(path_key, set())
+            new_forms = current_forms - known_forms
+            
+            if new_forms:
+                # Create a modified item with only the new forms for notification
+                new_item = item.copy()
+                new_item['forms'] = list(new_forms)
+                new_items.append(new_item)
+        
+        # Update known items for next run
+        self._known_pending_items = current_pending
+        
+        return new_items
+    
+    async def _send_notification(self, new_items: List[Dict]) -> None:
+        """Send a consolidated Discord notification for new pending items."""
+        if not self.discord_io or not new_items:
+            return
+        
+        try:
+            # Build notification message
+            if len(new_items) == 1:
+                item = new_items[0]
+                forms = ", ".join(item['forms'])
+                filename = item['path'].name
+                dm_text = (
+                    f"📝 **NoteFlow: Action Required**\n"
+                    f"File: `{filename}`\n"
+                    f"Pending: {forms}\n"
+                    f"Open the file in Obsidian to complete the form."
+                )
+            else:
+                dm_text = f"📝 **NoteFlow: {len(new_items)} files need your attention**\n\n"
+                for item in new_items[:5]:  # Limit to first 5 files
+                    filename = item['path'].name
+                    forms = ", ".join(item['forms'])
+                    status = " ⚠️" if item['has_error'] else ""
+                    dm_text += f"• `{filename}` — {forms}{status}\n"
+                
+                if len(new_items) > 5:
+                    dm_text += f"\n...and {len(new_items) - 5} more. Check NoteFlow Inbox in Obsidian."
+            
+            success = await self.discord_io.send_dm(TARGET_DISCORD_USER_ID, dm_text)
+            
+            if success:
+                logger.info("Sent Discord notification for %d new pending item(s)", len(new_items))
+            else:
+                logger.warning("Failed to send Discord notification")
+                
+        except Exception as e:
+            logger.warning("Error sending Discord notification: %s", e)
+    
     def _generate_markdown(self, items: List[Dict]) -> str:
         """Generate the inbox markdown content."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -202,7 +282,7 @@ class InboxGenerator:
         return "\n".join(lines)
     
     def generate(self) -> None:
-        """Generate the inbox file."""
+        """Generate the inbox file (sync version, no notifications)."""
         logger.info("Generating NoteFlow inbox...")
         
         items = self._scan_all()
@@ -215,5 +295,21 @@ class InboxGenerator:
         logger.info(f"Generated inbox with {len(items)} pending items: {self.inbox_path}")
     
     async def process_all(self) -> None:
-        """Async wrapper for scheduler compatibility."""
-        self.generate()
+        """Async entry point for scheduler - generates inbox and sends notifications."""
+        logger.info("Generating NoteFlow inbox...")
+        
+        items = self._scan_all()
+        
+        # Find new items for notification
+        new_items = self._find_new_items(items)
+        
+        # Generate and write inbox markdown
+        content = self._generate_markdown(items)
+        self.inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        self.inbox_path.write_text(content, encoding='utf-8')
+        
+        logger.info(f"Generated inbox with {len(items)} pending items: {self.inbox_path}")
+        
+        # Send notification for new items only
+        if new_items:
+            await self._send_notification(new_items)

@@ -12,8 +12,6 @@ from processors.notes.meeting_summary_generator import MeetingSummaryGenerator
 @pytest.fixture
 def mock_generator(mock_ai, tmp_path):
     """Create a MeetingSummaryGenerator with mocked dependencies."""
-    mock_discord = MagicMock()
-    mock_discord.send_dm = AsyncMock(return_value=True)
     input_dir = tmp_path / "transcriptions"
     input_dir.mkdir(parents=True)
     
@@ -22,7 +20,7 @@ def mock_generator(mock_ai, tmp_path):
         mock_paths.meetings.mkdir(parents=True)
         mock_paths.people_path = tmp_path / "people"
         mock_paths.people_path.mkdir(parents=True)
-        generator = MeetingSummaryGenerator(input_dir, mock_discord)
+        generator = MeetingSummaryGenerator(input_dir)
         yield generator
 
 
