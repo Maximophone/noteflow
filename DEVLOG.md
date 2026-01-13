@@ -4,6 +4,30 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-01-13: Entity Resolution Bug Fixes
+
+### Problem
+Entity resolution for email digests failed silently overnight:
+1. **Wrong AI model**: Hardcoded `opus4.5` instead of using `tiny_ai_model` (`gemini3.0flash`) from base class
+2. **Silent failure on JSON parse errors**: When AI response was truncated, code returned empty list instead of raising an error, causing stage to be marked complete with 0 entities
+
+### Root Cause
+Large email digest (33 emails, 25 threads) caused AI to generate 86+ entities, hitting token limits. The JSON response was truncated mid-string (`"[[EU` instead of `"[[EU AI Act]]"`), causing parse failure.
+
+### Solution
+1. Removed custom `self.entity_model = AI("opus4.5")` - now uses inherited `self.tiny_ai_model` from base class
+2. Fixed duplicate `super().__init__()` call
+3. Changed `return []` to `raise EntityResolutionError(...)` on JSON parse failure
+
+### Key Learning
+- Always use centralized AI model config (`services_config.py`) via base class, never hardcode model names in processors
+- The old DEVLOG entry mentioning Opus for entity resolution was outdated - Flash models work fine for this use case
+
+### Files Modified
+- `processors/notes/entity_resolver.py` - Model fix, error handling fix
+
+---
+
 ## 2026-01-12: Discord Notification Consolidation
 
 ### Problem

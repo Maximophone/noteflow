@@ -73,10 +73,7 @@ class EntityResolver(NoteProcessor):
     
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
-        super().__init__(input_dir)
         self.entity_reference_path = PATHS.vault_path / "Entity Reference.md"
-        # Use a more powerful model for entity resolution as per user request
-        self.entity_model = AI("opus4.5")
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_entity_resolution' tag
@@ -425,7 +422,7 @@ class EntityResolver(NoteProcessor):
 
             unique_entities = {}
             
-            response = await asyncio.to_thread(self.entity_model.message, message)
+            response = await asyncio.to_thread(self.tiny_ai_model.message, message)
             
             if response.error:
                 if "MAX_TOKENS" in str(response.error):
@@ -462,7 +459,7 @@ class EntityResolver(NoteProcessor):
                         
             except json.JSONDecodeError as e:
                 logger.error("Failed to parse JSON response: %s. Content: %s", e, content)
-                return []
+                raise EntityResolutionError(f"Failed to parse AI response as JSON: {e}")
                 
             return list(unique_entities.values())
             
