@@ -140,6 +140,7 @@ class EmailDigestProcessor:
             
             if not emails:
                 logger.info("No new emails found")
+                # Only update state after successful fetch (even if no emails)
                 self._update_state_after_run()
                 return
             
@@ -153,6 +154,7 @@ class EmailDigestProcessor:
             if not filtered_emails:
                 logger.info("No emails remaining after pre-filter")
                 await self._write_triage_log(triage_log, since)
+                # Only update state after successful processing
                 self._update_state_after_run()
                 return
             
@@ -166,19 +168,21 @@ class EmailDigestProcessor:
             
             if not important_emails:
                 logger.info("No important emails found")
+                # Only update state after successful processing
                 self._update_state_after_run()
                 return
             
             # Group by date and create digest files
             await self._create_digest_files(important_emails)
             
-            # Update state
+            # Update state ONLY after ALL steps succeed
             self._update_state_after_run()
             
             logger.info("Email digest processing complete")
             
         except Exception as e:
             logger.error(f"Error in email digest processing: {e}", exc_info=True)
+            # State NOT updated - processor will retry on next run
     
     def _update_state_after_run(self) -> None:
         """Update state file after successful run."""

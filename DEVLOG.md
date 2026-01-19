@@ -4,6 +4,65 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-01-19: Email Digest Error Handling Fixes
+
+### Problem
+Email digest processor had two critical issues:
+1. **Broken pipe errors** from Gmail API were caught but not re-raised, causing silent failures that appeared as "no emails found"
+2. **State marked as completed** even when email fetching failed, because the error path fell through to the "no emails" case which updated state
+
+Example error logs:
+```
+ERROR - Error fetching emails with query 'after:1768608107 in:inbox': [Errno 32] Broken pipe
+ERROR - Error fetching emails with query 'after:1768608107 in:sent': [Errno 32] Broken pipe
+```
+
+The processor would then update state and skip the day's emails permanently.
+
+### Root Cause
+**Issue 1**: In `GmailUtils.get_emails_since()`, exceptions were caught and logged but not re-raised:
+```python
+except Exception as e:
+    logger.error(...)
+    # No raise! Execution continues, returns []
+```
+
+**Issue 2**: With silent failures returning `[]`, the calling code interpreted this as "successfully fetched 0 emails" and updated state.
+
+**Issue 3**: Broken pipe errors occur when the Gmail API connection becomes stale between runs (credential refresh issues, network timeouts).
+
+### Solution
+
+**1. Added retry logic with connection reset** (`gmail_utils.py`):
+- New `_handle_broken_pipe()` method detects broken pipe errors and resets `self.service = None`
+- `get_emails_since()` wraps API calls in retry loop (max 2 attempts)
+- On broken pipe, gets fresh service connection and retries
+- All exceptions now properly re-raised after logging
+
+**2. Fixed error propagation** (`email_digest.py`):
+- Added clarifying comments showing state only updates in success paths
+- With re-raised exceptions, failed fetches now trigger exception handler where state is NOT updated
+- Failed runs will retry on next scheduled execution
+
+### Key Learnings
+- **Silent error handling is dangerous**: Always re-raise after logging unless you have a specific recovery strategy
+- **Distinguish "no results" from "failure to fetch"**: Empty results can be valid, but shouldn't be returned on errors
+- **Persistent connections need refresh logic**: Long-lived API service objects can become stale
+
+### Files Modified
+- `integrations/gmail_utils.py` - Added `_handle_broken_pipe()`, retry logic, error re-raising
+- `processors/notes/email_digest.py` - Added clarifying comments about state update logic
+
+### Verification
+All 17 existing tests passed:
+```
+tests/test_email_digest.py::TestGmailUtils::* - 7/7 passed
+tests/test_email_digest.py::TestEmailDigestProcessor::* - 6/6 passed  
+tests/test_email_digest.py::TestEmailDigestProcessorAsync::* - 4/4 passed
+```
+
+---
+
 ## 2026-01-13: Entity Resolution Bug Fixes
 
 ### Problem

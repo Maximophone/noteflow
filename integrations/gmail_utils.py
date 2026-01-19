@@ -102,6 +102,24 @@ class GmailUtils:
             self.service = build('gmail', 'v1', credentials=creds)
         return self.service
     
+    def _handle_broken_pipe(self, error: Exception) -> bool:
+        """Check if error is a broken pipe and reset service if so.
+        
+        Args:
+            error: The exception to check
+            
+        Returns:
+            True if error was a broken pipe, False otherwise
+        """
+        error_str = str(error)
+        is_broken_pipe = "Broken pipe" in error_str or isinstance(error, BrokenPipeError)
+        
+        if is_broken_pipe:
+            logger.warning("Broken pipe detected, resetting Gmail service connection")
+            self.service = None  # Force reconnection on next call
+        
+        return is_broken_pipe
+    
     def get_emails_since(self, since_timestamp: datetime, 
                          include_sent: bool = True,
                          include_received: bool = True) -> List[Dict[str, Any]]:
@@ -132,23 +150,36 @@ class GmailUtils:
         if include_sent:
             queries.append(f'{base_query} in:sent')
         
+        max_retries = 2
         for query in queries:
-            try:
-                results = service.users().messages().list(
-                    userId='me',
-                    q=query,
-                    maxResults=100  # Reasonable limit per day
-                ).execute()
-                
-                messages = results.get('messages', [])
-                
-                for msg_ref in messages:
-                    msg_data = self._get_message_details(msg_ref['id'])
-                    if msg_data:
-                        emails.append(msg_data)
-                        
-            except Exception as e:
-                logger.error(f"Error fetching emails with query '{query}': {e}")
+            for attempt in range(max_retries):
+                try:
+                    results = service.users().messages().list(
+                        userId='me',
+                        q=query,
+                        maxResults=100  # Reasonable limit per day
+                    ).execute()
+                    
+                    messages = results.get('messages', [])
+                    
+                    for msg_ref in messages:
+                        msg_data = self._get_message_details(msg_ref['id'])
+                        if msg_data:
+                            emails.append(msg_data)
+                    
+                    # Success - break retry loop
+                    break
+                            
+                except Exception as e:
+                    # Check if it's a broken pipe error that we can retry
+                    if attempt < max_retries - 1 and self._handle_broken_pipe(e):
+                        service = self._get_service()  # Get fresh connection
+                        logger.info(f"Retrying query '{query}' after broken pipe (attempt {attempt + 2}/{max_retries})")
+                        continue
+                    
+                    # Either not a broken pipe, or we've exhausted retries
+                    logger.error(f"Error fetching emails with query '{query}': {e}")
+                    raise  # Re-raise to notify caller of failure
         
         # Sort by date, oldest first (for chronological processing)
         emails.sort(key=lambda x: x.get('date', ''))
