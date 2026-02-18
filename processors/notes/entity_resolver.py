@@ -42,7 +42,7 @@ class EntityResolver(NoteProcessor):
     
     **Substage 1: AI Entity Detection**
         - Reads transcript and Entity Reference file
-        - AI detects named entities (people, organisations, other)
+        - AI detects named entities (people, organisations)
         - Looks up existing mappings in reference file
     
     **Substage 2: Form Generation**
@@ -51,7 +51,7 @@ class EntityResolver(NoteProcessor):
         - Sends Discord notification
     
     **Substage 3: Processing**
-        - Validates input (type must be: people, org, other)
+        - Validates input (type must be: people, org)
         - Replaces entity occurrences in transcript
         - Updates Entity Reference file with new mappings
     
@@ -63,7 +63,7 @@ class EntityResolver(NoteProcessor):
     required_stage = SpeakerIdentifier.stage_name
     
     # Entity types
-    ENTITY_TYPES = {"people", "org", "other"}
+    ENTITY_TYPES = {"people", "org"}
     
     # Form markers
     FORM_START = "<!-- form:entity_resolution:start -->"
@@ -138,10 +138,6 @@ class EntityResolver(NoteProcessor):
 ## Organisation Aliases
 | Detected Name | Resolved Link |
 |---------------|---------------|
-
-## Other Aliases
-| Detected Name | Resolved Link |
-|---------------|---------------|
 """
         self.entity_reference_path.write_text(template, encoding='utf-8')
         logger.info("Created Entity Reference file at: %s", self.entity_reference_path)
@@ -160,7 +156,7 @@ class EntityResolver(NoteProcessor):
         
         content = self.entity_reference_path.read_text(encoding='utf-8')
         
-        result = {"people": {}, "org": {}, "other": {}}
+        result = {"people": {}, "org": {}}
         current_type = None
         
         for line in content.split('\n'):
@@ -171,8 +167,8 @@ class EntityResolver(NoteProcessor):
                 current_type = "people"
             elif "## Organisation" in line:
                 current_type = "org"
-            elif "## Other" in line:
-                current_type = "other"
+            elif line.startswith("##"):
+                current_type = None
             elif current_type and line.startswith("|") and "---" not in line and "Detected" not in line:
                 # Parse table row: | Name | Link |
                 parts = [p.strip() for p in line.split("|") if p.strip()]
@@ -210,8 +206,7 @@ class EntityResolver(NoteProcessor):
         lines = ["# Entity Resolution Reference", ""]
         
         for section_name, section_type in [("People Aliases", "people"), 
-                                            ("Organisation Aliases", "org"),
-                                            ("Other Aliases", "other")]:
+                                            ("Organisation Aliases", "org")]:
             lines.extend([
                 f"## {section_name}",
                 "| Detected Name | Resolved Link |",
@@ -347,7 +342,7 @@ class EntityResolver(NoteProcessor):
         ]
         
         # Group by type
-        by_type = {"people": [], "org": [], "other": []}
+        by_type = {"people": [], "org": []}
         for e in entities:
             if e.get('resolved_link'):
                 by_type[e.get('entity_type', 'other')].append(e['resolved_link'])
@@ -397,7 +392,7 @@ class EntityResolver(NoteProcessor):
         
         # Format references for prompt
         ref_sections = []
-        for type_key, type_name in [("people", "People"), ("org", "Organisations"), ("other", "Other")]:
+        for type_key, type_name in [("people", "People"), ("org", "Organisations")]:
             items = reference.get(type_key, {})
             if items:
                 ref_sections.append(f"## {type_name}")
