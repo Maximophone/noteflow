@@ -16,6 +16,10 @@ from prompts.prompts import get_prompt
 logger = setup_logger(__name__)
 
 SPEAKER_IDENTIFICATION_MAX_RETRIES = 3
+# Hard timeout per AI call so a stalled Google API connection cannot wedge the
+# entire SpeakerIdentifier stage. A timeout is treated as a failure for retry
+# purposes (see identify_speaker / consolidate_answer).
+SPEAKER_AI_TIMEOUT_SECONDS = 120
 
 class SpeakerIdentificationError(Exception):
     """Exception raised when speaker identification processing encounters an error."""
@@ -337,13 +341,25 @@ class SpeakerIdentifier(NoteProcessor):
         )
         
         max_retries = SPEAKER_IDENTIFICATION_MAX_RETRIES
+        response = None
         for retry_count in range(max_retries):
-            response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(self.tiny_ai_model.message, message),
+                    timeout=SPEAKER_AI_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "AI call for speaker %s timed out after %ss. Retry %d/%d...",
+                    speaker_label, SPEAKER_AI_TIMEOUT_SECONDS, retry_count + 1, max_retries,
+                )
+                continue
             if response.content is not None:
                 return response.content.strip()
             logger.warning(f"Empty response for speaker {speaker_label}. Retry {retry_count + 1}/{max_retries}...")
-        
-        logger.error("Response from AI is empty after retries. Response error: %s", response.error)
+
+        err = getattr(response, 'error', 'timeout (no response)') if response is not None else 'timeout (no response)'
+        logger.error("Response from AI is empty after retries. Response error: %s", err)
         return f"PROBLEM WITH SPEAKER IDENTIFICATION FOR SPEAKER {speaker_label}."
 
     async def consolidate_answer(self, text: str) -> str:
@@ -356,7 +372,17 @@ class SpeakerIdentifier(NoteProcessor):
                 text=prompt
             )]
         )
-        response = await asyncio.to_thread(self.tiny_ai_model.message, message)
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self.tiny_ai_model.message, message),
+                timeout=SPEAKER_AI_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "consolidate_answer AI call timed out after %ss.",
+                SPEAKER_AI_TIMEOUT_SECONDS,
+            )
+            return "unknown"
         if response.content is None:
             logger.error("Response from AI is empty. Response error: %s", response.error)
             return "unknown"

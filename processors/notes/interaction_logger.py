@@ -107,10 +107,22 @@ class InteractionLogger(NoteProcessor):
         
         return logs_by_date
     
-    async def _filter_future_logs(self, person_content: str, meeting_date_str: str) -> str:
-        """Filters the AI Logs section, removing entries dated after meeting_date_str."""
+    async def _filter_future_logs(self, person_content: str, meeting_date_str) -> str:
+        """Filters the AI Logs section, removing entries dated after meeting_date_str.
+
+        Accepts either a string ('YYYY-MM-DD') or a datetime.date for meeting_date_str;
+        existing logs are keyed by 'YYYY-MM-DD' strings, so we coerce to that form for
+        the comparison (lexicographic order matches date order for ISO-8601 strings).
+        """
+        # Coerce date-like objects to ISO 'YYYY-MM-DD' to match the string keys
+        # produced by _parse_existing_logs.
+        if hasattr(meeting_date_str, 'isoformat'):
+            meeting_date_str = meeting_date_str.isoformat()
+        else:
+            meeting_date_str = str(meeting_date_str)
+
         logger.debug(f"Filtering future logs for meeting date: {meeting_date_str}")
-        
+
         section_exists, section_pos, content_before_section = await self._find_ai_logs_section(person_content)
         
         if not section_exists:
