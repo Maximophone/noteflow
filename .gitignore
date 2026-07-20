@@ -86,6 +86,8 @@ data/
 token.pickle
 credentials.json
 *.log
+# Runtime log directory (rotated logs, compressed archives)
+logs/
 
 # OS files
 .DS_Store
