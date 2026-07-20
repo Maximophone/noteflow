@@ -4,7 +4,6 @@ from typing import Optional, Dict
 import aiofiles
 from ..common.frontmatter import read_frontmatter_from_file, set_frontmatter_in_file, parse_frontmatter_from_content
 from ..common import error_registry
-import traceback
 from ai_core import AI
 import os
 import asyncio
@@ -76,9 +75,9 @@ class NoteProcessor(ABC):
         """Wrapper for file processing that handles stage tracking."""
         try:
             logger.info(f"Processing file {filename} for stage {self.__class__.stage_name}")
-            # Process the file
+            # Process the file (errors are logged once, by process_all)
             await self.process_file(filename)
-            
+
             # Update processing stages
             file_path = self.input_dir / filename
             frontmatter = read_frontmatter_from_file(file_path)
@@ -89,8 +88,8 @@ class NoteProcessor(ABC):
             set_frontmatter_in_file(file_path, frontmatter)
             os.utime(file_path, None)
             
-        except Exception as e:
-            logger.error("Error in %s processing %s: %s", self.__class__.__name__, filename, str(e))
+        except Exception:
+            # Logged once by process_all, which also records it in the error registry
             raise
     
     @abstractmethod
@@ -121,11 +120,13 @@ class NoteProcessor(ABC):
                 await self._process_file(filename)
                 error_registry.clear_error(file_path, self.__class__.stage_name)
             except Exception as e:
-                logger.error("Error processing %s: %s", filename, str(e))
-                traceback.print_exc()
                 # ResultsNotReadyError just means we're waiting on user input,
-                # not that something is wrong — keep it out of the inbox.
-                if type(e).__name__ != 'ResultsNotReadyError':
+                # not that something is wrong — keep it out of the inbox and
+                # don't spam the log with a traceback every cycle.
+                if type(e).__name__ == 'ResultsNotReadyError':
+                    logger.info("Waiting on user input for %s: %s", filename, e)
+                else:
+                    logger.error("Error processing %s: %s", filename, str(e), exc_info=True)
                     error_registry.record_error(file_path, self.__class__.stage_name, str(e))
             finally:
                 self.files_in_process.remove(filename)

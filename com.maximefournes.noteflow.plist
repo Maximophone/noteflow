@@ -20,11 +20,13 @@
     <key>KeepAlive</key>
     <true/>
     
+    <!-- Only uncaught output lands here; the app logs to logs/noteflow.log
+         via a size-rotated handler (see config/logging_config.py) -->
     <key>StandardOutPath</key>
-    <string>/Users/maximefournes/code/noteflow/logs/noteflow.log</string>
-    
+    <string>/Users/maximefournes/code/noteflow/logs/launchd.log</string>
+
     <key>StandardErrorPath</key>
-    <string>/Users/maximefournes/code/noteflow/logs/noteflow.log</string>
+    <string>/Users/maximefournes/code/noteflow/logs/launchd.log</string>
     
     <key>EnvironmentVariables</key>
     <dict>
