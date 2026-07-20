@@ -188,7 +188,9 @@ class MeetingSummaryGenerator(NoteProcessor):
                 person_ids.add(person_id)
         
         for person_id in person_ids:
-            person_name = person_id.replace('[[', '').replace(']]', '')
+            # Wikilink targets may carry a path prefix (e.g. [[People/Maxime Fournes]]);
+            # only the final component names the note file.
+            person_name = person_id.replace('[[', '').replace(']]', '').split('/')[-1]
             person_file = self.people_dir / f"{person_name}.md"
             
             if person_file.exists():

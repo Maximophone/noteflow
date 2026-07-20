@@ -38,7 +38,27 @@ class InteractionLogger(NoteProcessor):
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
         self.people_dir = PATHS.people_path
-        
+
+    @staticmethod
+    def _person_name(person_id: str) -> str:
+        """Extract a person's name from a wikilink.
+
+        Wikilink targets may carry a path prefix (e.g. [[People/Maxime Fournes]]);
+        only the final component names the person and their note file.
+        """
+        return person_id.replace('[[', '').replace(']]', '').split('/')[-1]
+
+    @staticmethod
+    def _to_date_str(value) -> str:
+        """Coerce a date-like frontmatter value to 'YYYY-MM-DD'.
+
+        Unquoted YAML dates parse as datetime.date; log entries are keyed by
+        strings, and mixing the two breaks sorting.
+        """
+        if hasattr(value, 'isoformat'):
+            return value.isoformat()
+        return str(value)
+
     def should_process(self, filename: str, frontmatter: Dict) -> bool:
         category = frontmatter.get('category', '').lower()
         
@@ -390,12 +410,14 @@ class InteractionLogger(NoteProcessor):
             
         logger.info(f"Processing {len(pending_speakers)} remaining speakers in {filename}")
         
+        missing_notes = []
         for person_id in pending_speakers:
-            person_name = person_id.replace('[[', '').replace(']]', '')
+            person_name = self._person_name(person_id)
             person_file_path = self.people_dir / f"{person_name}.md"
-            
+
             if not person_file_path.exists():
                 logger.warning(f"Person note not found: {person_file_path}")
+                missing_notes.append(person_name)
                 continue
             
             try:
@@ -447,6 +469,11 @@ class InteractionLogger(NoteProcessor):
         if not all_speakers_processed:
             remaining = len(all_speakers) - len(logged_interactions)
             logger.info(f"{remaining} speakers still pending in {filename}. Stage not marked complete yet.")
+            if missing_notes:
+                raise Exception(
+                    f"Missing People note(s) for speaker(s): {', '.join(sorted(missing_notes))}. "
+                    f"Create them (or fix the speaker mapping) to unblock {filename}."
+                )
             raise Exception(f"Not all speakers processed in {filename}. Will retry later.")
         
         # ===== Process Mentions =====
@@ -469,7 +496,7 @@ class InteractionLogger(NoteProcessor):
             logger.info(f"Processing {len(pending_mentions)} mentions in {filename}")
             
             # Get names for batch processing
-            pending_names = [m.replace('[[', '').replace(']]', '') for m in pending_mentions]
+            pending_names = [self._person_name(m) for m in pending_mentions]
             
             # Single AI call for all mentions
             mention_logs = await self._generate_mention_logs_batch(
@@ -480,7 +507,7 @@ class InteractionLogger(NoteProcessor):
             
             # Process each mention with the batch results
             for person_id in pending_mentions:
-                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_name = self._person_name(person_id)
                 person_file_path = self.people_dir / f"{person_name}.md"
                 
                 if not person_file_path.exists():
@@ -576,7 +603,7 @@ class InteractionLogger(NoteProcessor):
             logger.info(f"Processing {len(pending_participants)} email correspondents in {filename}")
             
             # Get names for batch processing
-            pending_names = [p.replace('[[', '').replace(']]', '') for p in pending_participants]
+            pending_names = [self._person_name(p) for p in pending_participants]
             
             # Single AI call for all participants
             participant_logs = await self._generate_email_participant_logs_batch(
@@ -587,7 +614,7 @@ class InteractionLogger(NoteProcessor):
             
             # Process each participant with batch results
             for person_id in pending_participants:
-                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_name = self._person_name(person_id)
                 person_file_path = self.people_dir / f"{person_name}.md"
                 
                 if not person_file_path.exists():
@@ -668,7 +695,7 @@ class InteractionLogger(NoteProcessor):
         if pending_mentions:
             logger.info(f"Processing {len(pending_mentions)} email mentions in {filename}")
             
-            pending_names = [m.replace('[[', '').replace(']]', '') for m in pending_mentions]
+            pending_names = [self._person_name(m) for m in pending_mentions]
             
             # Single AI call for all mentions
             mention_logs = await self._generate_email_mention_logs_batch(
@@ -678,7 +705,7 @@ class InteractionLogger(NoteProcessor):
             )
             
             for person_id in pending_mentions:
-                person_name = person_id.replace('[[', '').replace(']]', '')
+                person_name = self._person_name(person_id)
                 person_file_path = self.people_dir / f"{person_name}.md"
                 
                 if not person_file_path.exists():
@@ -745,8 +772,11 @@ class InteractionLogger(NoteProcessor):
                                  log_content: str,
                                  category: str = 'meeting') -> bool:
         """Update a person's note with the new log entry."""
-        person_name = person_id.replace('[[', '').replace(']]', '')
+        person_name = self._person_name(person_id)
         person_file_path = self.people_dir / f"{person_name}.md"
+        # Existing logs are keyed by 'YYYY-MM-DD' strings; a datetime.date key
+        # would break the sorted() over mixed key types below.
+        meeting_date = self._to_date_str(meeting_date)
         
         if not person_file_path.exists():
             logger.warning(f"Person note not found: {person_file_path}")
@@ -857,8 +887,9 @@ class InteractionLogger(NoteProcessor):
 
     async def _remove_log_entry(self, person_id: str, meeting_date: str, source_link: str) -> None:
         """Removes a specific log entry from a person's note."""
-        person_name = person_id.replace('[[', '').replace(']]', '')
+        person_name = self._person_name(person_id)
         person_file_path = self.people_dir / f"{person_name}.md"
+        meeting_date = self._to_date_str(meeting_date)
         
         if not person_file_path.exists():
             logger.warning(f"Person note not found during reset: {person_file_path}")

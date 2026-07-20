@@ -225,6 +225,86 @@ Some info about John.
         
         assert success is False
 
+    @pytest.mark.asyncio
+    async def test_resolves_person_id_with_path_prefix(self, mock_interaction_logger):
+        """[[People/Name]] wikilinks should resolve to the note's basename."""
+        person_file = mock_interaction_logger.people_dir / "Maxime Fournes.md"
+        person_file.write_text("""---
+name: Maxime Fournes
+---
+Info.
+""")
+
+        success = await mock_interaction_logger._update_person_note(
+            person_id="[[People/Maxime Fournes]]",
+            meeting_date="2026-02-25",
+            source_link="[[2026-02-25-meeting]]",
+            log_content="- Discussed strategy",
+            category="meeting"
+        )
+
+        assert success is True
+        assert "Discussed strategy" in person_file.read_text()
+
+    @pytest.mark.asyncio
+    async def test_handles_date_object_with_existing_string_keyed_logs(self, mock_interaction_logger):
+        """A datetime.date meeting date must not break sorting against existing string keys."""
+        import datetime
+
+        person_file = mock_interaction_logger.people_dir / "John Smith.md"
+        person_file.write_text("""---
+name: John Smith
+---
+Some info about John.
+
+# AI Logs
+>[!warning] Do not Modify
+
+## 2026-01-10
+*category*: meeting
+*source:* [[2026-01-10-meeting]]
+*notes*:
+- Older entry
+
+""")
+
+        success = await mock_interaction_logger._update_person_note(
+            person_id="[[John Smith]]",
+            meeting_date=datetime.date(2026, 2, 25),
+            source_link="[[2026-02-25-meeting]]",
+            log_content="- Newer entry",
+            category="meeting"
+        )
+
+        assert success is True
+        updated_content = person_file.read_text()
+        assert "## 2026-02-25" in updated_content
+        assert "- Newer entry" in updated_content
+        assert "- Older entry" in updated_content
+
+
+class TestMissingSpeakerNotes:
+    """Tests for meetings whose speakers have no People note."""
+
+    @pytest.mark.asyncio
+    async def test_missing_speaker_note_raises_actionable_error(self, mock_interaction_logger, mock_ai):
+        """The failure should name the missing People notes."""
+        transcript_file = mock_interaction_logger.input_dir / "2026-05-11-meeting.md"
+        transcript_file.write_text("""---
+category: meeting
+date: '2026-05-11'
+title: meeting
+final_speaker_mapping:
+  Speaker A:
+    name: Ghost Person
+    person_id: "[[Ghost Person]]"
+---
+Transcript content.
+""")
+
+        with pytest.raises(Exception, match="Missing People note.*Ghost Person"):
+            await mock_interaction_logger.process_file("2026-05-11-meeting.md")
+
 
 class TestReset:
     """Tests for reset/revert functionality."""
