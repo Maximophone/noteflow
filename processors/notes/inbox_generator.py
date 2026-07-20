@@ -16,6 +16,7 @@ from config.logging_config import setup_logger
 from config.user_config import TARGET_DISCORD_USER_ID
 from integrations.discord import DiscordIOCore
 from ..common.frontmatter import read_frontmatter_from_file
+from ..common import error_registry
 
 logger = setup_logger(__name__)
 
@@ -80,10 +81,59 @@ class InboxGenerator:
         section = content[start_idx:]
         return "> [!error]" in section
     
+    def _note_name(self, file_path: Path) -> str:
+        """Vault-relative path without extension for wikilinks."""
+        try:
+            return str(file_path.relative_to(self.vault_path).with_suffix(''))
+        except ValueError:
+            # Fallback to just filename if not under vault
+            return file_path.stem
+
+    def _check_broken_frontmatter(self, file_path: Path) -> Optional[Dict]:
+        """Detect pipeline files whose frontmatter can no longer be parsed.
+
+        A file that is mid-pipeline always carries frontmatter (processing_stages,
+        pending flags, form markers). If the content shows those traces but the
+        frontmatter parses to nothing, the file is stuck and every processor
+        silently skips it — so surface it as an error.
+
+        Returns an error dict if the file looks broken, None otherwise.
+        """
+        try:
+            frontmatter = read_frontmatter_from_file(file_path)
+            message = "Frontmatter could not be parsed — check the '---' delimiters at the top of the file"
+        except Exception as e:
+            frontmatter = None
+            message = f"Frontmatter YAML error: {e}"
+
+        if frontmatter:
+            return None
+
+        # No parseable frontmatter — only a problem if the content shows the
+        # file was already in the pipeline. Full read happens only here, so
+        # healthy files never pay for it.
+        try:
+            content = file_path.read_text(encoding='utf-8')
+        except Exception:
+            return None
+
+        has_pipeline_traces = (
+            'processing_stages:' in content
+            or any(marker in content for marker in FORM_MARKERS.values())
+        )
+        if not has_pipeline_traces:
+            return None
+
+        return {
+            'name': self._note_name(file_path),
+            'stage': 'frontmatter',
+            'message': message,
+        }
+
     def _scan_file(self, file_path: Path) -> Optional[Dict]:
         """
         Scan a single file for pending forms.
-        
+
         Returns:
             Dict with file info if pending forms found, None otherwise
         """
@@ -92,7 +142,7 @@ class InboxGenerator:
         except Exception as e:
             logger.debug(f"Could not read frontmatter from {file_path}: {e}")
             return None
-        
+
         # Check for pending forms
         pending_forms = []
         for flag, form_name in FORM_TYPES.items():
@@ -131,48 +181,61 @@ class InboxGenerator:
             else:
                 file_date = None
         
-        # Get vault-relative path without extension for wikilink (avoids duplicate name issues)
-        try:
-            relative_path = file_path.relative_to(self.vault_path)
-            note_name = str(relative_path.with_suffix(''))
-        except ValueError:
-            # Fallback to just filename if not under vault
-            note_name = file_path.stem
-        
         return {
-            "name": note_name,
+            # Vault-relative path without extension for wikilink (avoids duplicate name issues)
+            "name": self._note_name(file_path),
             "path": file_path,
             "forms": pending_forms,
             "has_error": has_error,
             "date": file_date,
         }
     
-    def _scan_all(self) -> List[Dict]:
-        """Scan all markdown files in all directories for pending forms."""
+    def _scan_all(self) -> tuple[List[Dict], List[Dict]]:
+        """Scan all markdown files in all directories for pending forms and errors.
+
+        Returns:
+            Tuple of (pending items, error items). Error items combine broken
+            files found during the scan with errors recorded by processors.
+        """
         results = []
-        
+        errors = []
+
         for scan_dir in self.scan_dirs:
             if not scan_dir.exists():
                 logger.warning(f"Scan directory does not exist: {scan_dir}")
                 continue
-            
+
             for file_path in scan_dir.iterdir():
                 if not file_path.suffix == '.md':
                     continue
-                
+
+                broken = self._check_broken_frontmatter(file_path)
+                if broken:
+                    errors.append(broken)
+                    continue
+
                 file_info = self._scan_file(file_path)
                 if file_info:
                     results.append(file_info)
-        
+
+        # Add errors recorded by processors, skipping files that no longer exist
+        for entry in error_registry.get_errors():
+            if entry['path'].exists():
+                errors.append({
+                    'name': self._note_name(entry['path']),
+                    'stage': entry['stage'],
+                    'message': entry['message'],
+                })
+
         # Sort by date (newest first), with None dates at the end
         def sort_key(x):
             if x['date'] is None:
                 return (1, datetime.min)  # None dates go to end
             return (0, x['date'])
-        
+
         results.sort(key=sort_key, reverse=True)
-        
-        return results
+
+        return results, errors
     
     def _find_new_items(self, items: List[Dict]) -> List[Dict]:
         """Compare current items with known items to find new pending forms.
@@ -241,17 +304,41 @@ class InboxGenerator:
         except Exception as e:
             logger.warning("Error sending Discord notification: %s", e)
     
-    def _generate_markdown(self, items: List[Dict]) -> str:
+    @staticmethod
+    def _table_cell(text: str) -> str:
+        """Make an error message safe for a single markdown table cell."""
+        text = ' '.join(text.split())  # collapse newlines/whitespace
+        if len(text) > 300:
+            text = text[:300] + "…"
+        return text.replace('|', '\\|')
+
+    def _generate_markdown(self, items: List[Dict], error_items: List[Dict] = None) -> str:
         """Generate the inbox markdown content."""
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        
+        error_items = error_items or []
+
         lines = [
             "# NoteFlow Inbox",
             "",
             f"> Last updated: {now}",
             "",
         ]
-        
+
+        if error_items:
+            lines.extend([
+                f"## Processing Errors ({len(error_items)} {'file' if len(error_items) == 1 else 'files'})",
+                "",
+                "These files hit an error and will not progress until fixed.",
+                "",
+                "| Note | Stage | Error |",
+                "|------|-------|-------|",
+            ])
+            for item in error_items:
+                lines.append(
+                    f"| [[{item['name']}]] | {item['stage']} | {self._table_cell(item['message'])} |"
+                )
+            lines.append("")
+
         if not items:
             lines.extend([
                 "✅ **All clear!** No notes are waiting for input.",
@@ -285,30 +372,30 @@ class InboxGenerator:
         """Generate the inbox file (sync version, no notifications)."""
         logger.info("Generating NoteFlow inbox...")
         
-        items = self._scan_all()
-        content = self._generate_markdown(items)
-        
+        items, error_items = self._scan_all()
+        content = self._generate_markdown(items, error_items)
+
         # Write the inbox file
         self.inbox_path.parent.mkdir(parents=True, exist_ok=True)
         self.inbox_path.write_text(content, encoding='utf-8')
-        
-        logger.info(f"Generated inbox with {len(items)} pending items: {self.inbox_path}")
+
+        logger.info(f"Generated inbox with {len(items)} pending items and {len(error_items)} errors: {self.inbox_path}")
     
     async def process_all(self) -> None:
         """Async entry point for scheduler - generates inbox and sends notifications."""
         logger.info("Generating NoteFlow inbox...")
         
-        items = self._scan_all()
-        
+        items, error_items = self._scan_all()
+
         # Find new items for notification
         new_items = self._find_new_items(items)
-        
+
         # Generate and write inbox markdown
-        content = self._generate_markdown(items)
+        content = self._generate_markdown(items, error_items)
         self.inbox_path.parent.mkdir(parents=True, exist_ok=True)
         self.inbox_path.write_text(content, encoding='utf-8')
-        
-        logger.info(f"Generated inbox with {len(items)} pending items: {self.inbox_path}")
+
+        logger.info(f"Generated inbox with {len(items)} pending items and {len(error_items)} errors: {self.inbox_path}")
         
         # Send notification for new items only
         if new_items:

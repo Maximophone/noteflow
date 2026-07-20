@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional, Dict
 import aiofiles
 from ..common.frontmatter import read_frontmatter_from_file, set_frontmatter_in_file, parse_frontmatter_from_content
+from ..common import error_registry
 import traceback
 from ai_core import AI
 import os
@@ -38,7 +39,12 @@ class NoteProcessor(ABC):
             frontmatter = read_frontmatter_from_file(file_path)
         except Exception as e:
             logger.error("Error reading frontmatter for %s in stage %s: %s", filename, self.__class__.stage_name, str(e))
+            error_registry.record_error(file_path, self.__class__.stage_name, f"Unreadable frontmatter: {e}")
             return False
+
+        # Frontmatter is readable again; drop any stale error for this stage.
+        # A failure later in this cycle will re-record it.
+        error_registry.clear_error(file_path, self.__class__.stage_name)
 
         # Skip if "abandoned" flag is set in frontmatter
         if frontmatter.get('abandoned', False):
@@ -113,9 +119,14 @@ class NoteProcessor(ABC):
             try:
                 self.files_in_process.add(filename)
                 await self._process_file(filename)
+                error_registry.clear_error(file_path, self.__class__.stage_name)
             except Exception as e:
                 logger.error("Error processing %s: %s", filename, str(e))
                 traceback.print_exc()
+                # ResultsNotReadyError just means we're waiting on user input,
+                # not that something is wrong — keep it out of the inbox.
+                if type(e).__name__ != 'ResultsNotReadyError':
+                    error_registry.record_error(file_path, self.__class__.stage_name, str(e))
             finally:
                 self.files_in_process.remove(filename)
         logger.debug(f"Finished processing all eligible files for stage {self.__class__.stage_name}")
