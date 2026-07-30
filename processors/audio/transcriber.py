@@ -43,7 +43,12 @@ class AudioTranscriber:
         self.config = assemblyai.TranscriptionConfig(
             speaker_labels=True,
             language_detection=True,
-            word_boost=["Pause IA", "Pause AI", "Moiri"],
+            # Universal-3.5 Pro: ~34% lower WER on French than universal-2, plus
+            # native code-switching for mixed FR/EN meetings. Covers 18 languages;
+            # anything outside them errors rather than silently downgrading.
+            speech_models=["universal-3-5-pro"],
+            # word_boost is rejected by the Pro models; keyterms_prompt replaces it.
+            keyterms_prompt=["Pause IA", "Pause AI", "Moiri"],
         )
         
         # Create necessary directories
