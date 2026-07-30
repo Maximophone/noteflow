@@ -9,6 +9,8 @@
     <array>
         <string>/Users/maximefournes/code/noteflow/.venv/bin/python</string>
         <string>/Users/maximefournes/code/noteflow/main.py</string>
+        <string>--daily-restart-time</string>
+        <string>04:00</string>
     </array>
     
     <key>WorkingDirectory</key>

@@ -197,7 +197,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     return processors
 
 
-async def main():
+async def main(daily_restart_time: str = None):
     # Create all required directories
     for path in PATHS:
         if hasattr(path, 'parent') and path.suffix:
@@ -242,16 +242,36 @@ async def main():
     
     logger.info(f"Scheduled {scheduled_count} processor jobs.")
 
+    stop_event = asyncio.Event()
+
+    def daily_restart():
+        logger.info("Executing scheduled daily restart/shutdown...")
+        stop_event.set()
+
+    if daily_restart_time:
+        try:
+            hour, minute = map(int, daily_restart_time.split(':'))
+            scheduler.add_job(daily_restart, 'cron', hour=hour, minute=minute, id='daily_restart', name='Daily Restart')
+            logger.info(f"Scheduled daily restart at {daily_restart_time}")
+        except ValueError:
+            logger.error(f"Invalid format for --daily-restart-time: {daily_restart_time}. Expected HH:MM.")
+
     try:
         logger.info("Starting scheduler...")
         scheduler.start()
         logger.info("Scheduler started.")
 
         logger.info("NoteFlow service running...")
-        await asyncio.gather(
-            discord_task,
-            asyncio.Event().wait()  # Keep the main loop alive
+        
+        # Wait for either the discord client, or the stop signal
+        done, pending = await asyncio.wait(
+            [discord_task, asyncio.create_task(stop_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED
         )
+        
+        for task in pending:
+            task.cancel()
+            
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutdown signal received.")
     except Exception as e:
@@ -272,10 +292,14 @@ if __name__ == "__main__":
                         default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='Set the default logging level (default: INFO)')
+    parser.add_argument('--daily-restart-time',
+                        type=str,
+                        help='Time to restart the service daily (HH:MM format). If not provided, no daily restart occurs.')
     args = parser.parse_args()
 
     set_default_log_level(args.log_level)
     logger.info(f"Logging level set to {args.log_level}")
+
 
     # Silence APScheduler logs
     logging.getLogger('apscheduler.executors.default').setLevel(logging.ERROR)
@@ -283,7 +307,7 @@ if __name__ == "__main__":
 
     try:
         logger.info("Starting NoteFlow service...")
-        asyncio.run(main())
+        asyncio.run(main(daily_restart_time=args.daily_restart_time))
     except KeyboardInterrupt:
         logger.info("NoteFlow service interrupted by user.")
     except Exception as e:

@@ -38,7 +38,7 @@ class AudioTranscriber:
         
         # Set up AssemblyAI
         assemblyai.settings.api_key = api_key
-        assemblyai.settings.http_timeout = 900  # 15 minutes for slow connections
+        assemblyai.settings.http_timeout = 3600  # 1 hour for very slow hotel connections
         self.transcriber = assemblyai.Transcriber()
         self.config = assemblyai.TranscriptionConfig(
             speaker_labels=True,
@@ -209,6 +209,10 @@ class AudioTranscriber:
             
         except Exception as e:
             logger.error("Error processing %s: %s", filename, str(e))
+            # Add to a "failed recently" set to prevent immediate re-queueing
+            if not hasattr(self, 'failed_recently'):
+                self.failed_recently: Dict[str, datetime] = {}
+            self.failed_recently[filename] = datetime.now()
             raise
         finally:
             self.files_in_process.remove(filename)
@@ -221,9 +225,16 @@ class AudioTranscriber:
             filename = file_path.name
             if not self.should_process(filename, None):
                 continue
-            # Skip if already being processed
-            if filename in self.files_in_process:
-                continue
+            # Skip if failed recently (within last 5 minutes)
+            if not hasattr(self, 'failed_recently'):
+                self.failed_recently = {}
+            if filename in self.failed_recently:
+                last_fail = self.failed_recently[filename]
+                if (datetime.now() - last_fail).total_seconds() < 300:
+                    continue
+                else:
+                    del self.failed_recently[filename]
+                    
             self.files_in_process.add(filename)
             logger.info("Queuing transcription: %s", filename)
             task = asyncio.create_task(self.process_single_file(filename))
