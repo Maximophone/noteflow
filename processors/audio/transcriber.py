@@ -35,6 +35,8 @@ class AudioTranscriber:
         self.output_dir = output_dir
         self.processed_dir = processed_dir
         self.files_in_process: Set[str] = set()
+        # filename -> time of last failure, used to back off before retrying
+        self.failed_recently: Dict[str, datetime] = {}
         
         # Set up AssemblyAI
         assemblyai.settings.api_key = api_key
@@ -214,9 +216,7 @@ class AudioTranscriber:
             
         except Exception as e:
             logger.error("Error processing %s: %s", filename, str(e))
-            # Add to a "failed recently" set to prevent immediate re-queueing
-            if not hasattr(self, 'failed_recently'):
-                self.failed_recently: Dict[str, datetime] = {}
+            # Record the failure to prevent immediate re-queueing
             self.failed_recently[filename] = datetime.now()
             raise
         finally:
@@ -230,9 +230,10 @@ class AudioTranscriber:
             filename = file_path.name
             if not self.should_process(filename, None):
                 continue
+            # Skip if already being processed
+            if filename in self.files_in_process:
+                continue
             # Skip if failed recently (within last 5 minutes)
-            if not hasattr(self, 'failed_recently'):
-                self.failed_recently = {}
             if filename in self.failed_recently:
                 last_fail = self.failed_recently[filename]
                 if (datetime.now() - last_fail).total_seconds() < 300:
