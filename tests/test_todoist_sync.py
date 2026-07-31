@@ -116,7 +116,7 @@ def write_transcript(directory, name, action_items, meeting_date="2026-07-29"):
 @pytest.fixture
 def processor(mock_ai, monkeypatch, tmp_path):
     """A processor with a fake Todoist client and a mocked AI."""
-    monkeypatch.setattr("processors.notes.todoist_sync.TODOIST_API_TOKEN", "fake-token")
+    monkeypatch.setattr("processors.notes.todoist_base.TODOIST_API_TOKEN", "fake-token")
     input_dir = tmp_path / "transcriptions"
     input_dir.mkdir(parents=True)
 
@@ -177,7 +177,7 @@ class TestShouldProcess:
         })
 
     def test_disabled_without_token(self, mock_ai, monkeypatch, tmp_path):
-        monkeypatch.setattr("processors.notes.todoist_sync.TODOIST_API_TOKEN", None)
+        monkeypatch.setattr("processors.notes.todoist_base.TODOIST_API_TOKEN", None)
         proc = TodoistSyncProcessor(tmp_path)
         assert proc.client is None
         assert not proc.should_process("new.md", {

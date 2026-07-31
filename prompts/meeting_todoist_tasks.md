@@ -5,8 +5,8 @@ each one into a well-formed Todoist task. You must not invent tasks.
 
 # Meeting
 
-Title: {meeting_title}
-Date: {meeting_date} ({weekday})
+Title: {source_title}
+Date: {source_date} ({weekday})
 Today's date: {today}
 
 <meeting_context>
@@ -52,7 +52,7 @@ Currently open tasks (for duplicate detection):
 
 ## Due dates
 - `due_date`: absolute date in YYYY-MM-DD format, or null if there is genuinely no deadline.
-- Resolve relative deadlines against the **meeting date ({meeting_date}, a {weekday})**,
+- Resolve relative deadlines against the **meeting date ({source_date}, a {weekday})**,
   not against today:
   - "by end of day" / "today" -> the meeting date
   - "tomorrow" -> meeting date + 1 day
