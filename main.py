@@ -142,7 +142,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
             elif cls is IdeaCleanupProcessor:
                 instance = cls(input_dir=PATHS.transcriptions, output_dir=PATHS.ideas)
             elif cls is TodoProcessor:
-                instance = cls(input_dir=PATHS.transcriptions, directory_file=PATHS.todo_directory)
+                instance = cls(input_dir=PATHS.transcriptions)
             elif cls is TodoistSyncProcessor:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is InteractionLogger:

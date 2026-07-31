@@ -25,7 +25,7 @@ A document processing pipeline for audio transcription and note management.
 | `DiaryProcessor` | Formats diary entries |
 | `IdeaProcessor` | Extracts and logs ideas to a directory |
 | `IdeaCleanupProcessor` | Cleans up idea notes |
-| `TodoProcessor` | Extracts todo items from transcripts |
+| `TodoProcessor` | Turns dictated todo memos into Todoist tasks |
 | `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
 | `TodoistSyncProcessor` | Pushes the user's meeting action items to Todoist (AI picks section, due date, urgency, labels) |
 | `InteractionLogger` | Logs interactions per person |
@@ -94,16 +94,24 @@ TODOIST_API_TOKEN=your_todoist_token
 
 ### Todoist Sync
 
-After a meeting summary is validated, `TodoistSyncProcessor` turns the action items the
-user owns into Todoist tasks. It reads the *validated* summary, so the human review gate
+Two stages push tasks to Todoist, sharing all their machinery via
+`processors/notes/todoist_base.py`:
+
+| Stage | Source | Ownership |
+|-------|--------|-----------|
+| `todoist_synced` (`TodoistSyncProcessor`) | `## Action Items` from a validated meeting summary | AI decides which items the user owns |
+| `todos_extracted` (`TodoProcessor`) | The body of a `category: todo` voice memo | All of them — the user dictated it |
+
+For meetings, the action items come from the *validated* summary, so the human review gate
 in the Obsidian summary form is the only approval step — the sync itself is automatic.
 
-- One AI call per meeting decides ownership, wording, due date, urgency, project, section
+- One AI call per note decides wording, due date, urgency, project, section
   and labels, using the live Todoist project/section/label lists and open tasks as context.
-- Every task returned by the AI must quote its source bullet verbatim, or it is discarded —
-  this keeps invented tasks out of Todoist.
-- Recurring commitments restated in a later meeting **update the existing open task**
-  (refreshed due date, appended note) instead of creating a duplicate.
+- Every task returned by the AI must quote its source verbatim — a summary bullet, or a
+  phrase from the memo — or it is discarded. This keeps invented tasks out of Todoist.
+- A commitment restated in a later note **updates the existing open task** (refreshed due
+  date, appended note and link) instead of creating a duplicate. Both recurring meeting
+  action items and re-dictated memos hit this often.
 - The project and section are chosen from whatever exists in the account at the time, so
   projects added later need no config change. Anything that doesn't clearly fit a project —
   including personal matters — goes to the Inbox rather than being filed at a guess.
@@ -112,9 +120,11 @@ in the Obsidian summary form is the only approval step — the sync itself is au
   left out of duplicate detection (Todoist's onboarding project is there by default).
 - Every task carries the `TODOIST_AI_LABEL` marker label, so AI-created tasks can be
   filtered and cleaned up in bulk.
-- `START_DATE` in `processors/notes/todoist_sync.py` gates which meetings are eligible;
-  older transcripts are skipped unless tagged `force_todoist_sync`.
-- Without `TODOIST_API_TOKEN` the stage is inert (logs a warning, processes nothing).
+- Deadlines resolve against the note's own date, not today; a resulting past date is pulled
+  forward to today, with the original kept in the description.
+- Each stage's `START_DATE` gates eligibility; older notes are skipped unless tagged
+  `force_todoist_sync`.
+- Without `TODOIST_API_TOKEN` both stages are inert (log a warning, process nothing).
 
 ## Usage
 

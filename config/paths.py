@@ -85,6 +85,8 @@ class Paths:
         self.meditations = self.vault_noteflow_path / "Meditations"
         self.ideas = self.vault_noteflow_path / "Ideas"
         self.ideas_directory = self.vault_noteflow_path / "Ideas Directory.md"
+        # Historical: dictated todos went here until TodoProcessor started pushing
+        # them to Todoist. Kept as a record of what was captured before the switch.
         self.todo_directory = self.vault_noteflow_path / "Todo Directory.md"
         self.gdoc_path = self.vault_path / "gdoc"
         self.coda_path = self.vault_path / "coda"
