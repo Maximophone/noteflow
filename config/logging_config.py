@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -16,6 +17,12 @@ LOG_FILE = Path(__file__).resolve().parent.parent / "logs" / "noteflow.log"
 LOG_MAX_BYTES = 50 * 1024 * 1024  # 50 MB per file
 LOG_BACKUP_COUNT = 5  # noteflow.log.1 ... noteflow.log.5
 
+# Set NOTEFLOW_LOG_TO_FILE=0 to log to stdout only. There is a single shared log
+# file, so anything running alongside the service — the test suite, a one-off
+# script — otherwise interleaves its output with the real service's log, which
+# makes the log misleading to read (fake ids from tests look like real activity).
+LOG_TO_FILE_ENV_VAR = "NOTEFLOW_LOG_TO_FILE"
+
 # Example of how to set different levels for different components
 LOGGER_LEVELS = {
     'services.file_watcher': 'INFO',
@@ -29,9 +36,9 @@ _shared_handlers = None
 def _get_shared_handlers() -> list:
     """Build the handlers shared by all loggers (created once).
 
-    Always writes to the rotating log file; also echoes to stdout when
-    attached to a terminal (interactive runs). Falls back to stdout-only
-    if the log file cannot be opened.
+    Writes to the rotating log file unless NOTEFLOW_LOG_TO_FILE=0; also echoes to
+    stdout when attached to a terminal (interactive runs). Falls back to
+    stdout-only if the log file is disabled or cannot be opened.
     """
     global _shared_handlers
     if _shared_handlers is not None:
@@ -40,18 +47,19 @@ def _get_shared_handlers() -> list:
     formatter = logging.Formatter(DEFAULT_FORMAT)
     handlers = []
 
-    try:
-        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
-            LOG_FILE,
-            maxBytes=LOG_MAX_BYTES,
-            backupCount=LOG_BACKUP_COUNT,
-            encoding='utf-8',
-        )
-        file_handler.setFormatter(formatter)
-        handlers.append(file_handler)
-    except OSError as e:
-        print(f"WARNING: could not open log file {LOG_FILE}: {e}", file=sys.stderr)
+    if os.environ.get(LOG_TO_FILE_ENV_VAR, "1") != "0":
+        try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                LOG_FILE,
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUP_COUNT,
+                encoding='utf-8',
+            )
+            file_handler.setFormatter(formatter)
+            handlers.append(file_handler)
+        except OSError as e:
+            print(f"WARNING: could not open log file {LOG_FILE}: {e}", file=sys.stderr)
 
     if not handlers or (hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()):
         stream_handler = logging.StreamHandler(sys.stdout)
