@@ -52,6 +52,9 @@ coverage.xml
 
 # Environments
 .env
+# Backups and variants of .env hold live secrets too; only .env.example is tracked.
+.env.*
+!.env.example
 .venv
 env/
 venv/
