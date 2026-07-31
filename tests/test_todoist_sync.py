@@ -231,19 +231,24 @@ class TestTodoistContext:
         assert "sec-tutorial" not in [s["id"] for s in context["sections"]]
         assert [t["id"] for t in context["open_tasks"]] == ["t-work"]
 
-    def test_creates_marker_label_if_absent(self, processor):
+    def test_creates_managed_labels_if_absent(self, processor):
         processor.client.labels = [{"id": "lab-1", "name": "fundraising"}]
 
         context = processor._fetch_todoist_context()
 
-        assert processor.client.created_labels == ["ai-generated"]
-        assert "ai-generated" in [label["name"] for label in context["labels"]]
+        assert processor.client.created_labels == ["ai-generated", "from-meeting"]
+        names = [label["name"] for label in context["labels"]]
+        assert "ai-generated" in names
+        assert "from-meeting" in names
 
-    def test_marker_label_not_offered_as_a_choice(self, processor):
+    def test_managed_labels_not_offered_as_a_choice(self, processor):
+        processor.client.labels.append({"id": "lab-3", "name": "from-meeting"})
+
         rendered = processor._format_labels(processor.client.labels)
 
         assert "fundraising" in rendered
         assert "ai-generated" not in rendered
+        assert "from-meeting" not in rendered
 
 
 # ===== Validation =====
@@ -280,14 +285,14 @@ class TestValidation:
         assert tasks[0]["section_id"] == "sec-legal"
         assert tasks[0]["priority"] == 3  # high
 
-    def test_strips_unknown_labels_and_always_adds_marker(self, processor):
+    def test_strips_unknown_labels_and_always_adds_managed_ones(self, processor):
         action_lines = ["- [[Maxime Fournes]] Update the SFF application (by next week)."]
         tasks = processor._validate_tasks(
             [task_payload(labels=["fundraising", "invented-label"])],
             action_lines,
             self._context(processor.client),
         )
-        assert tasks[0]["labels"] == ["fundraising", "ai-generated"]
+        assert tasks[0]["labels"] == ["fundraising", "ai-generated", "from-meeting"]
 
     def test_null_project_goes_to_inbox(self, processor):
         action_lines = ["- [[Maxime Fournes]] Update the SFF application (by next week)."]
@@ -418,7 +423,7 @@ class TestProcessFile:
         assert created["project_id"] == "proj-work"
         assert created["section_id"] == "sec-legal"
         assert created["due_date"] == future
-        assert "ai-generated" in created["labels"]
+        assert created["labels"] == ["fundraising", "ai-generated", "from-meeting"]
         assert "obsidian://open" in created["description"]
         assert "2026-07-29-funding" in created["description"]
 
@@ -426,7 +431,7 @@ class TestProcessFile:
         assert "todoist_tasks:" in content
         assert "action: created" in content
 
-    async def test_creates_marker_label_when_missing(self, processor, mock_ai):
+    async def test_creates_managed_labels_when_missing(self, processor, mock_ai):
         processor.client.labels = [{"id": "lab-1", "name": "fundraising"}]
         write_transcript(
             processor.input_dir, "2026-07-29-funding.md",
@@ -438,8 +443,8 @@ class TestProcessFile:
 
         await processor.process_file("2026-07-29-funding.md")
 
-        assert processor.client.created_labels == ["ai-generated"]
-        assert "ai-generated" in processor.client.created[0]["labels"]
+        assert processor.client.created_labels == ["ai-generated", "from-meeting"]
+        assert "from-meeting" in processor.client.created[0]["labels"]
 
     async def test_unfiled_task_goes_to_inbox(self, processor, mock_ai):
         write_transcript(
@@ -486,7 +491,9 @@ class TestProcessFile:
         assert "Original context." in update["description"]
         assert "Restated in 2026-07-30-pausecon" in update["description"]
         assert "obsidian://open" in update["description"]
-        assert "ai-generated" in update["labels"]
+        # Restating a task in a meeting doesn't make the meeting its origin.
+        assert update["labels"] == ["fundraising", "ai-generated"]
+        assert "from-meeting" not in update["labels"]
 
         content = (processor.input_dir / "2026-07-30-pausecon.md").read_text()
         assert "action: updated" in content

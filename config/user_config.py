@@ -18,6 +18,27 @@ USER_ORGANIZATION = "Pause IA"
 # Every task NoteFlow creates carries this label, so AI-created tasks can be
 # filtered and cleaned up in bulk. Created automatically if it doesn't exist.
 TODOIST_AI_LABEL = "ai-generated"
+
+# Provenance labels: which kind of note a task came from. Named after the artifact
+# rather than the medium, since meeting transcripts are dictated audio too. Each is
+# created automatically if it doesn't exist, and is applied on task creation only —
+# a label says where a task came from, not everywhere it has since been mentioned.
+TODOIST_LABEL_FROM_MEETING = "from-meeting"
+TODOIST_LABEL_FROM_VOICE_MEMO = "from-voice-memo"
+
+# All of them, so no stage offers another stage's provenance label to the model as a
+# topical choice. Add any new one here as well as on its processor.
+TODOIST_PROVENANCE_LABELS = [
+    TODOIST_LABEL_FROM_MEETING,
+    TODOIST_LABEL_FROM_VOICE_MEMO,
+]
+
+# Labels the AI must never apply, beyond the managed ones above. "human-approved" is
+# the user's own review marker — if the AI could stamp it, reviewing would mean
+# nothing. Add any label whose meaning depends on a human having applied it.
+TODOIST_RESERVED_LABELS = [
+    "human-approved",
+]
 # Projects the AI never files into, and whose tasks are left out of duplicate
 # detection. Todoist's onboarding project is pure noise in both. Matched by name,
 # case-insensitively.
