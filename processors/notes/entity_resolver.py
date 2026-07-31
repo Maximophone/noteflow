@@ -149,8 +149,9 @@ class EntityResolver(NoteProcessor):
             Dict with structure: {
                 "people": {"maxime": "[[Maxime Fournes]]", ...},
                 "org": {"pause ai": "[[Pause IA]]", ...},
-                "other": {...}
             }
+
+        Sections other than People/Organisation are ignored.
         """
         self._ensure_entity_reference_exists()
         
@@ -192,15 +193,21 @@ class EntityResolver(NoteProcessor):
             if not entity.get('resolved_link'):
                 continue
             
-            entity_type = entity.get('entity_type', 'other')
+            entity_type = entity.get('entity_type')
+            if entity_type not in self.ENTITY_TYPES:
+                # Anything else has no section in the reference file, so it would
+                # be dropped on the next rebuild. Skip it loudly instead.
+                logger.warning(
+                    "Not adding %r to Entity Reference: unsupported type %r",
+                    entity.get('detected_name'), entity_type
+                )
+                continue
+
             detected_name = entity['detected_name'].lower()
-            resolved_link = entity['resolved_link']
-            
+
             # Only add if not already present
-            if detected_name not in reference.get(entity_type, {}):
-                if entity_type not in reference:
-                    reference[entity_type] = {}
-                reference[entity_type][detected_name] = resolved_link
+            if detected_name not in reference[entity_type]:
+                reference[entity_type][detected_name] = entity['resolved_link']
         
         # Rebuild file content
         lines = ["# Entity Resolution Reference", ""]
@@ -239,7 +246,9 @@ class EntityResolver(NoteProcessor):
         for i, entity in enumerate(entities):
             detected = entity['detected_name']
             suggested = entity.get('suggested_link', '')
-            entity_type = entity.get('entity_type', 'other')
+            # Blank rather than a placeholder: validation then tells the user the
+            # field is required instead of rejecting an invented type.
+            entity_type = entity.get('entity_type', '')
             
             lines.extend([
                 f"## {detected}",
@@ -301,7 +310,7 @@ class EntityResolver(NoteProcessor):
         for i in range(max_idx + 1):
             result['entities'].append({
                 'link': links.get(i, ''),
-                'type': types.get(i, 'other'),
+                'type': types.get(i, ''),
             })
         
         # Parse finished checkbox
@@ -341,11 +350,21 @@ class EntityResolver(NoteProcessor):
             "",
         ]
         
-        # Group by type
+        # Group by type — only the supported types get a section
         by_type = {"people": [], "org": []}
         for e in entities:
-            if e.get('resolved_link'):
-                by_type[e.get('entity_type', 'other')].append(e['resolved_link'])
+            if not e.get('resolved_link'):
+                continue
+
+            entity_type = e.get('entity_type')
+            if entity_type not in by_type:
+                logger.warning(
+                    "Omitting %r from summary: unsupported type %r",
+                    e.get('detected_name'), entity_type
+                )
+                continue
+
+            by_type[entity_type].append(e['resolved_link'])
         
         for type_name, links in by_type.items():
             if links:
@@ -445,12 +464,25 @@ class EntityResolver(NoteProcessor):
                 
                 for item in entities:
                     detected = item.get("detected_name")
-                    if detected:
-                        unique_entities[detected] = {
-                            "detected_name": detected,
-                            "suggested_link": item.get("suggested_link", ""),
-                            "entity_type": item.get("entity_type", "other")
-                        }
+                    if not detected:
+                        continue
+
+                    # The prompt asks for people/org only. Keep the entity if the
+                    # AI says otherwise, but leave the type blank so the form asks
+                    # the user for it rather than pre-filling something invalid.
+                    entity_type = item.get("entity_type", "")
+                    if entity_type not in self.ENTITY_TYPES:
+                        logger.warning(
+                            "AI returned unsupported entity_type %r for %r; leaving blank",
+                            entity_type, detected
+                        )
+                        entity_type = ""
+
+                    unique_entities[detected] = {
+                        "detected_name": detected,
+                        "suggested_link": item.get("suggested_link", ""),
+                        "entity_type": entity_type
+                    }
                         
             except json.JSONDecodeError as e:
                 logger.error("Failed to parse JSON response: %s. Content: %s", e, content)
@@ -476,7 +508,7 @@ class EntityResolver(NoteProcessor):
         
         # Store detected entities for later reference
         frontmatter['detected_entities'] = [
-            {'detected_name': e['detected_name'], 'entity_type': e.get('entity_type', 'other')}
+            {'detected_name': e['detected_name'], 'entity_type': e.get('entity_type', '')}
             for e in entities
         ]
         

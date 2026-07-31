@@ -49,13 +49,17 @@ class TestEntityReferenceParsing:
         # Mock file read
         with patch.object(Path, "exists", return_value=True), \
              patch.object(Path, "read_text", return_value=content):
-            
+
             result = mock_resolver._parse_entity_reference()
-            
+
             assert result["people"]["maxime"] == "[[Maxime Fournes]]"
             assert result["people"]["max"] == "[[Maxime Fournes]]"
             assert result["org"]["pause ai"] == "[[Pause IA]]"
-            assert result["other"]["agi"] == "[[AGI]]"
+
+            # Only people and org are supported entity types. Any other section
+            # is ignored, and its rows must not leak into the preceding section.
+            assert set(result) == {"people", "org"}
+            assert "agi" not in result["org"]
 
 class TestReferenceMethods:
     """Tests for helper methods related to references."""
@@ -63,7 +67,7 @@ class TestReferenceMethods:
     def test_update_reference_adds_new(self, mock_resolver):
         """Should add new entities to references."""
         # Mock parsing to return empty
-        with patch.object(mock_resolver, "_parse_entity_reference", return_value={"people": {}, "org": {}, "other": {}}), \
+        with patch.object(mock_resolver, "_parse_entity_reference", return_value={"people": {}, "org": {}}), \
              patch.object(Path, "write_text") as mock_write:
             
             new_entities = [
@@ -78,6 +82,51 @@ class TestReferenceMethods:
             content = mock_write.call_args[0][0]
             assert "| Maxime | [[Maxime Fournes]] |" in content
             assert "| Pause Ai | [[Pause IA]] |" in content
+
+    def test_update_reference_skips_unsupported_type(self, mock_resolver):
+        """Entities with an unsupported type have no section, so they are skipped."""
+        with patch.object(mock_resolver, "_parse_entity_reference", return_value={"people": {}, "org": {}}), \
+             patch.object(Path, "write_text") as mock_write:
+
+            mock_resolver._update_entity_reference([
+                {"detected_name": "AGI", "resolved_link": "[[AGI]]", "entity_type": "other"},
+                {"detected_name": "Maxime", "resolved_link": "[[Maxime Fournes]]", "entity_type": "people"},
+            ])
+
+            content = mock_write.call_args[0][0]
+            assert "[[AGI]]" not in content
+            assert "| Maxime | [[Maxime Fournes]] |" in content
+
+class TestSummaryGeneration:
+    """Tests for the completion summary."""
+
+    def test_summary_groups_supported_types(self, mock_resolver):
+        """Supported types are grouped into their own lines."""
+        summary = mock_resolver._generate_summary([
+            {"detected_name": "Maxime", "resolved_link": "[[Maxime Fournes]]", "entity_type": "people"},
+            {"detected_name": "Pause AI", "resolved_link": "[[Pause IA]]", "entity_type": "org"},
+        ])
+
+        assert "**People:** [[Maxime Fournes]]" in summary
+        assert "**Org:** [[Pause IA]]" in summary
+
+    def test_summary_tolerates_unsupported_type(self, mock_resolver):
+        """An unsupported type is omitted rather than raising KeyError."""
+        summary = mock_resolver._generate_summary([
+            {"detected_name": "AGI", "resolved_link": "[[AGI]]", "entity_type": "other"},
+            {"detected_name": "Maxime", "resolved_link": "[[Maxime Fournes]]", "entity_type": "people"},
+        ])
+
+        assert "[[AGI]]" not in summary
+        assert "**People:** [[Maxime Fournes]]" in summary
+
+    def test_summary_tolerates_missing_type(self, mock_resolver):
+        """A missing entity_type is omitted rather than raising KeyError."""
+        summary = mock_resolver._generate_summary([
+            {"detected_name": "Maxime", "resolved_link": "[[Maxime Fournes]]"},
+        ])
+
+        assert "[[Maxime Fournes]]" not in summary
 
 class TestFormGenerationAndParsing:
     """Tests for form generation and parsing."""
