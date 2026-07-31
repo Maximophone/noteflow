@@ -20,6 +20,7 @@ from .speaker_identifier import SpeakerIdentifier
 from .todoist_base import SourceMaterial, TodoistTaskSync
 from ..common.frontmatter import read_text_from_content
 from config.logging_config import setup_logger
+from config.user_config import TODOIST_LABEL_FROM_VOICE_MEMO
 
 logger = setup_logger(__name__)
 
@@ -37,6 +38,7 @@ class TodoProcessor(TodoistTaskSync):
     stage_name = "todos_extracted"
     required_stage = SpeakerIdentifier.stage_name
     prompt_name = "transcript_todoist_tasks"
+    provenance_label = TODOIST_LABEL_FROM_VOICE_MEMO
 
     # Every existing todo transcript already carries this stage, so nothing is
     # backfilled. The gate is here for consistency with the meeting stage: it stops a

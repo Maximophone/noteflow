@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from .meeting_summary_generator import MeetingSummaryGenerator
 from .todoist_base import SourceMaterial, TodoistTaskSync
 from config.logging_config import setup_logger
-from config.user_config import USER_NAME
+from config.user_config import TODOIST_LABEL_FROM_MEETING, USER_NAME
 
 logger = setup_logger(__name__)
 
@@ -42,6 +42,7 @@ class TodoistSyncProcessor(TodoistTaskSync):
     stage_name = "todoist_synced"
     required_stage = MeetingSummaryGenerator.stage_name
     prompt_name = "meeting_todoist_tasks"
+    provenance_label = TODOIST_LABEL_FROM_MEETING
 
     # Meetings dated before this are skipped unless forced. Without this gate, adding
     # the stage would have fired on every already-summarised transcript in the vault.

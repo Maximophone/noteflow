@@ -97,10 +97,13 @@ TODOIST_API_TOKEN=your_todoist_token
 Two stages push tasks to Todoist, sharing all their machinery via
 `processors/notes/todoist_base.py`:
 
-| Stage | Source | Ownership |
-|-------|--------|-----------|
-| `todoist_synced` (`TodoistSyncProcessor`) | `## Action Items` from a validated meeting summary | AI decides which items the user owns |
-| `todos_extracted` (`TodoProcessor`) | The body of a `category: todo` voice memo | All of them — the user dictated it |
+| Stage | Source | Ownership | Provenance label |
+|-------|--------|-----------|------------------|
+| `todoist_synced` (`TodoistSyncProcessor`) | `## Action Items` from a validated meeting summary | AI decides which items the user owns | `from-meeting` |
+| `todos_extracted` (`TodoProcessor`) | The body of a `category: todo` voice memo | All of them — the user dictated it | `from-voice-memo` |
+
+Adding a third source (email, say) means a new subclass with its own prompt, plus a
+`from-email` constant added to `TODOIST_PROVENANCE_LABELS` in `config/user_config.py`.
 
 For meetings, the action items come from the *validated* summary, so the human review gate
 in the Obsidian summary form is the only approval step — the sync itself is automatic.
@@ -115,7 +118,13 @@ in the Obsidian summary form is the only approval step — the sync itself is au
 - The project and section are chosen from whatever exists in the account at the time, so
   projects added later need no config change. Anything that doesn't clearly fit a project —
   including personal matters — goes to the Inbox rather than being filed at a guess.
-- Labels are whitelist-only: the AI can only apply labels that already exist.
+- Labels are whitelist-only: the AI can only apply labels that already exist, and never
+  a reserved one — the `ai-generated` marker, any provenance label, or anything in
+  `TODOIST_RESERVED_LABELS` (`human-approved` by default, since a review marker the AI
+  could stamp would mean nothing).
+- Each stage stamps a **provenance label** recording where the task came from:
+  `from-meeting` or `from-voice-memo`, created automatically if absent. It goes on at
+  creation only — a task restated in a later note keeps its original provenance.
 - Projects listed in `TODOIST_IGNORED_PROJECTS` are never filed into, and their tasks are
   left out of duplicate detection (Todoist's onboarding project is there by default).
 - Every task carries the `TODOIST_AI_LABEL` marker label, so AI-created tasks can be

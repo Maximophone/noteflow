@@ -37,7 +37,13 @@ from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
 from config.secrets import TODOIST_API_TOKEN
-from config.user_config import TODOIST_AI_LABEL, TODOIST_IGNORED_PROJECTS, USER_NAME
+from config.user_config import (
+    TODOIST_AI_LABEL,
+    TODOIST_IGNORED_PROJECTS,
+    TODOIST_PROVENANCE_LABELS,
+    TODOIST_RESERVED_LABELS,
+    USER_NAME,
+)
 from integrations.todoist_integration import (
     URGENCY_TO_PRIORITY,
     TodoistClient,
@@ -82,6 +88,10 @@ class TodoistTaskSync(NoteProcessor):
     # Name of the prompt file (without .md) in prompts/.
     prompt_name: Optional[str] = None
 
+    # Label recording which kind of note the task came from (e.g. "from-meeting").
+    # Applied on creation only, so it stays a statement about origin.
+    provenance_label: Optional[str] = None
+
     # Notes dated before this are skipped unless tagged with FORCE_TAG.
     START_DATE = "2026-07-24"
 
@@ -102,6 +112,32 @@ class TodoistTaskSync(NoteProcessor):
                 "TODOIST_API_TOKEN not set — Todoist sync is disabled, notes will "
                 "stay unprocessed for stage '%s'", self.stage_name
             )
+
+    # ===== Managed labels =====
+
+    @property
+    def managed_labels(self) -> List[str]:
+        """Labels this stage applies itself, rather than letting the AI choose them."""
+        labels = [TODOIST_AI_LABEL]
+        if self.provenance_label:
+            labels.append(self.provenance_label)
+        return labels
+
+    @staticmethod
+    def _reserved_labels() -> set:
+        """Labels the model is never offered and never allowed to apply.
+
+        Wider than this stage's own managed labels: another stage's provenance label
+        would be a lie on a task from this one, and a label like "human-approved"
+        means nothing if the AI can stamp it.
+        """
+        return {
+            name.lower() for name in (
+                TODOIST_AI_LABEL,
+                *TODOIST_PROVENANCE_LABELS,
+                *TODOIST_RESERVED_LABELS,
+            )
+        }
 
     # ===== Hooks for subclasses =====
 
@@ -159,9 +195,10 @@ class TodoistTaskSync(NoteProcessor):
         ]
 
         labels = self.client.get_labels()
-        if TODOIST_AI_LABEL.lower() not in {label.get("name", "").lower() for label in labels}:
-            logger.info("Creating Todoist label: %s", TODOIST_AI_LABEL)
-            labels.append(self.client.create_label(TODOIST_AI_LABEL))
+        for managed in self.managed_labels:
+            if managed.lower() not in {label.get("name", "").lower() for label in labels}:
+                logger.info("Creating Todoist label: %s", managed)
+                labels.append(self.client.create_label(managed))
 
         # Every open task outside the ignored projects, so a commitment restated in a
         # different project is still recognised as a duplicate.
@@ -194,13 +231,11 @@ class TodoistTaskSync(NoteProcessor):
             lines.append(f"- {project['name']}{suffix}")
         return '\n'.join(lines)
 
-    @staticmethod
-    def _format_labels(labels: List[Dict]) -> str:
-        # The marker label is applied unconditionally, so it isn't offered as a
-        # topical choice.
+    def _format_labels(self, labels: List[Dict]) -> str:
+        reserved = self._reserved_labels()
         names = [
             label['name'] for label in labels
-            if label['name'].lower() != TODOIST_AI_LABEL.lower()
+            if label['name'].lower() not in reserved
         ]
         if not names:
             return "(no labels)"
@@ -301,7 +336,12 @@ class TodoistTaskSync(NoteProcessor):
     ) -> List[Dict[str, Any]]:
         """Drop hallucinated tasks and coerce every field to something Todoist accepts."""
         known = {self._normalise(reference) for reference in references}
-        label_names = {label["name"].lower(): label["name"] for label in context["labels"]}
+        reserved = self._reserved_labels()
+        label_names = {
+            label["name"].lower(): label["name"]
+            for label in context["labels"]
+            if label["name"].lower() not in reserved
+        }
         project_ids = {p["name"].strip().lower(): p["id"] for p in context["projects"]}
         open_task_ids = {str(task["id"]) for task in context["open_tasks"]}
 
@@ -338,8 +378,9 @@ class TodoistTaskSync(NoteProcessor):
                 for label in (task.get("labels") or [])
                 if isinstance(label, str) and label.lower() in label_names
             ]
-            if TODOIST_AI_LABEL not in labels:
-                labels.append(TODOIST_AI_LABEL)
+            for managed in self.managed_labels:
+                if managed not in labels:
+                    labels.append(managed)
 
             duplicate_of = task.get("duplicate_of")
             duplicate_of = str(duplicate_of) if duplicate_of else None
@@ -486,6 +527,9 @@ class TodoistTaskSync(NoteProcessor):
             )
             description = f"{description}\n\n{note}" if description else note
 
+            # The AI marker goes on because this task is now AI-maintained, but the
+            # provenance label does not: the task did not come from this note, it was
+            # only restated in it. The appended description records that.
             labels = list(existing.get("labels") or [])
             if TODOIST_AI_LABEL not in labels:
                 labels.append(TODOIST_AI_LABEL)

@@ -147,7 +147,7 @@ class TestProcessFile:
         assert paid["project_id"] == "proj-work"
         assert paid["section_id"] == "sec-legal"
         assert paid["due_date"] == future
-        assert "ai-generated" in paid["labels"]
+        assert paid["labels"] == ["ai-generated", "from-voice-memo"]
         # No project chosen -> Inbox, not filed at a guess.
         assert ramon["project_id"] == "proj-inbox"
         assert "obsidian://open" in ramon["description"]
@@ -207,3 +207,63 @@ class TestProcessFile:
         assert update["due_date"] == future
         assert "From an earlier memo." in update["description"]
         assert "Restated in 2026-07-30-todos" in update["description"]
+        # Re-dictating a task doesn't re-stamp its origin.
+        assert update["labels"] == ["ai-generated"]
+
+
+class TestProvenanceLabel:
+
+    def test_voice_memos_are_labelled_as_such(self, processor):
+        assert processor.provenance_label == "from-voice-memo"
+        assert processor.managed_labels == ["ai-generated", "from-voice-memo"]
+
+    def test_another_stages_provenance_label_is_not_offered(self, processor):
+        processor.client.labels = [
+            {"id": "l1", "name": "fundraising"},
+            {"id": "l2", "name": "from-meeting"},
+            {"id": "l3", "name": "from-voice-memo"},
+        ]
+
+        rendered = processor._format_labels(processor.client.labels)
+
+        assert "fundraising" in rendered
+        # A voice memo is not a meeting, and its own label is applied automatically.
+        assert "from-meeting" not in rendered
+        assert "from-voice-memo" not in rendered
+
+    def test_reserved_labels_cannot_be_applied_by_the_ai(self, processor):
+        """A human-review marker the AI could stamp would be worthless."""
+        processor.client.labels = [
+            {"id": "l1", "name": "fundraising"},
+            {"id": "l2", "name": "human-approved"},
+        ]
+        context = processor._fetch_todoist_context()
+
+        assert "human-approved" not in processor._format_labels(context["labels"])
+
+        tasks = processor._validate_tasks(
+            [{
+                "source_line": "pay Matilda",
+                "content": "Pay Matilda",
+                "labels": ["human-approved", "from-meeting", "fundraising"],
+                "due_date": None,
+                "urgency": "normal",
+                "project": None,
+                "section": None,
+                "duplicate_of": None,
+            }],
+            ["I need to pay Matilda."],
+            context,
+        )
+
+        assert tasks[0]["labels"] == ["fundraising", "ai-generated", "from-voice-memo"]
+
+    def test_the_two_stages_use_different_provenance_labels(self, processor, monkeypatch,
+                                                            tmp_path):
+        from processors.notes.todoist_sync import TodoistSyncProcessor
+
+        monkeypatch.setattr("processors.notes.todoist_base.TODOIST_API_TOKEN", "fake-token")
+        meetings = TodoistSyncProcessor(tmp_path)
+
+        assert meetings.provenance_label != processor.provenance_label
+        assert meetings.managed_labels == ["ai-generated", "from-meeting"]
