@@ -2,6 +2,14 @@
 Shared test fixtures and configuration for NoteFlow E2E tests.
 """
 
+import os
+
+# Must run before anything imports config.logging_config, which builds its handlers
+# on first use. Without this, a test run appends to the same logs/noteflow.log the
+# service writes to, and fixture data (fake task ids, fake filenames) reads as real
+# activity when debugging later.
+os.environ.setdefault("NOTEFLOW_LOG_TO_FILE", "0")
+
 import pytest
 import asyncio
 import shutil
