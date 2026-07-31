@@ -4,6 +4,179 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-07-31: Todoist Sync for Meeting Action Items and Todo Memos
+
+### Problem
+Two kinds of commitment were being captured but never reaching the list actually worked
+from:
+
+1. **Meeting action items** lived only in the `## Action Items` section of a summary, in
+   the transcript and the monthly index. Acting on them meant re-reading meeting notes.
+2. **Dictated todo memos** (`category: todo`) were appended to an Obsidian
+   `Todo Directory.md` note that was never opened.
+
+A survey of July 2026 showed the scale and the main hazard: 49 Maxime-owned action items
+across 22 meetings, but with heavy restatement. "Brief the national chapter leads on the
+Pause AI US situation" appeared in 4 separate meetings (07-16, 07-20, and both 07-22
+meetings); "Send the resignation letter to Holly Elmore" in 3; "Send Gabriel Alfour
+recommendations of aligned advocacy organisations" in 3. A naive sync would have created
+several copies of each single commitment.
+
+### Solution
+
+**Source of truth: the validated summary, not the raw transcript.** The action items are
+read from the summary callout that `MeetingSummaryGenerator` writes after the user checks
+"Finished" in its Obsidian form. That form is already a human review gate — the user can
+edit or delete items before validating — so the Todoist write needs no second
+confirmation.
+
+**Pre-fetched account state instead of tool-calling.** One HTTP round fetches projects,
+sections, labels and open tasks, all injected into the prompt. `ai_core` supports tools,
+but the catalogs are small and static, so a prefetch is cheaper, deterministic, and has
+no loop failure modes. It also supplies duplicate detection for free.
+
+**One AI call per note** decides ownership (meetings only), wording, description, due
+date, urgency, project, section, labels, and whether each item duplicates an open task.
+
+**Shared base class.** `todoist_base.TodoistTaskSync` holds everything both stages need;
+subclasses supply only `should_process()` and a `_source_material()` hook returning the
+text to triage plus its prompt fields.
+
+### Key Design Decisions
+
+- **Restatements update, they don't duplicate.** When the model marks `duplicate_of`, the
+  existing open task is updated — due date refreshed, a "Restated in ..." note and
+  Obsidian link appended to the description rather than replacing it (the description may
+  have been hand-edited). This is the single most important behaviour given the
+  restatement rate above.
+- **`source_line` as an anti-hallucination check.** Every returned task must quote its
+  source verbatim — a bullet line for a summary, a phrase from the body for a memo — or it
+  is dropped and logged. A task the model invented cannot quote input that never existed.
+- **Whitelist everything the model names.** Labels must already exist; projects and
+  sections must exist, and a section must belong to the chosen project. Anything
+  unresolved falls back to the Inbox rather than being filed at a guess — misfiling is
+  worse than leaving a task to triage.
+- **The AI picks the project, not config.** Projects and sections come from whatever is in
+  the account at that moment, so a project added later is picked up with no code change.
+  This was confirmed live: a "Pause IA (France)" project created mid-session was chosen
+  correctly on the next run.
+- **Deadlines anchor to the note's date, not today.** "by next week" in a 2026-07-27
+  meeting means the Friday after that meeting. A resulting past date is pulled forward to
+  today with the original kept in the description — an item that lands already overdue
+  reads as a data error rather than as work.
+- **Provenance labels stamp origin, not mentions.** `from-meeting` / `from-voice-memo` are
+  applied on creation only. A task restated later keeps its original provenance, which
+  also keeps the label honest on the user's own manual tasks that the sync merely updates.
+  Named after the artifact rather than the medium, since meeting transcripts are dictated
+  audio too — "from-audio-note" would not have distinguished them.
+- **`START_DATE` gates eligibility.** 416 transcripts already carried
+  `meeting_summarized`; without the gate the new stage would have fired on all of them.
+  `force_todoist_sync` in `source_tags` overrides it.
+- **The todo stage kept its old `todos_extracted` stage name.** All 29 existing memos
+  already carried it, so switching the destination backfilled nothing.
+- **Partial failures record what succeeded, then raise.** The stage is not marked done, so
+  it retries; duplicate detection stops the retry from re-creating what already landed.
+
+### Key Learnings
+
+- **Survey the real data before designing.** The restatement rate was invisible from the
+  code and was the thing that most shaped the design. Reading two weeks of actual
+  summaries was worth more than any amount of reasoning about the schema.
+- **The live account contradicts assumptions.** Todoist's "Getting Started 👋" onboarding
+  project was being offered as a filing destination and its 16 tutorial tasks were
+  drowning the duplicate-detection context; hence `TODOIST_IGNORED_PROJECTS`.
+- **A label whose meaning depends on a human must be unusable by the AI.** The user had
+  added a `human-approved` label to mark reviewed tasks. Nothing stopped the model
+  applying it, which would have made the entire review step meaningless. Hence
+  `TODOIST_RESERVED_LABELS`.
+- **Per-stage exclusion lists leak.** Filtering only *this* stage's provenance label from
+  the offered list let the meeting stage apply `from-voice-memo`. Reserved labels have to
+  be a global set.
+- **The Todoist API v1 spec is fetchable even when the docs page isn't.** The rendered
+  reference is JS-heavy and unreadable to a fetcher, but
+  `https://developer.todoist.com/openapi.json` gives exact request/response shapes.
+
+### Files Created
+- `integrations/todoist_integration.py` - API v1 client (cursor pagination, retries on
+  429/5xx only)
+- `processors/notes/todoist_base.py` - `TodoistTaskSync`, shared by both stages
+- `processors/notes/todoist_sync.py` - `TodoistSyncProcessor`, meeting action items
+- `prompts/meeting_todoist_tasks.md` - triage prompt, includes ownership rules
+- `prompts/transcript_todoist_tasks.md` - memo prompt, includes splitting rules
+- `tests/test_todoist_sync.py`, extended `tests/test_todo.py` - 49 tests
+
+### Files Modified
+- `processors/notes/todo.py` - rewritten to push to Todoist instead of `Todo Directory.md`
+- `config/user_config.py` - label and ignored-project settings
+- `config/secrets.py`, `.env.example` - `TODOIST_API_TOKEN`
+- `config/paths.py` - noted `todo_directory` is now historical
+- `main.py` - registered `TodoistSyncProcessor`, dropped `TodoProcessor`'s `directory_file`
+- `.gitignore` - widened `.env` to `.env.*` (backups hold live secrets too)
+- `README.md`
+
+### Files Deleted
+- `prompts/extract_todos.md` - dead with the code that used it
+
+### Verification
+Backfilled 10 meetings from 2026-07-24 against the live account: **10 tasks created, 4
+existing tasks updated** rather than duplicated — including four of the user's own
+manually-written tasks ("Find orgs for Gabe", "Chase Rob Wiblin", "Produce impact report
+for Gabe", "Sort out legal things for CRM"). One task created early in the run was matched
+and updated by a later meeting in the same run. Date clamping fired on the two 2026-07-27
+deadlines.
+
+The memo stage then fired unattended in production on `2026-07-31-Matildas July Payment`,
+splitting it into the personal expense and the PauseAI salary as two separate tasks.
+
+### Open Question
+When a meeting restates a commitment with an *earlier* deadline than one the user set by
+hand, the meeting currently wins ("Chase Rob Wiblin" moved 2026-08-07 → 2026-08-03). The
+user confirmed this is desired; the alternative is to only ever extend a deadline.
+
+---
+
+## 2026-07-31: Test Runs Polluting the Service Log
+
+### Problem
+`logs/noteflow.log` is a single shared file, and `setup_logger()` attaches a
+`RotatingFileHandler` to it at import time. Running the test suite therefore appended to
+the same log the live service writes to. Fixture data then read as real activity — fake
+Todoist ids like `new-1` and `task-42` interleaved with genuine task ids — which made the
+log actively misleading when debugging the Todoist work.
+
+### Root Cause
+Handlers are built once, lazily, by `_get_shared_handlers()`, and the file handler was
+unconditional. `LOG_FILE` is resolved relative to `config/logging_config.py`, so a run
+from a git worktree writes to *that* worktree's `logs/`, which is also why out-of-band
+script runs seemed to log nowhere.
+
+### Solution
+The file handler is skipped when `NOTEFLOW_LOG_TO_FILE=0`. `tests/conftest.py` sets it at
+module top level, before any import can reach `logging_config` — a fixture would run too
+late, since the handlers are already built by then. With no file handler, the existing
+stdout fallback takes over, and pytest captures it.
+
+### Key Learnings
+- **Lazily-built module state constrains where you can configure it.** The env var had to
+  be set at conftest import time, not in a fixture.
+- **Silence is not proof.** The first attempt appeared to work only because the merge had
+  not yet run; verifying meant comparing line counts across a full suite run.
+
+### Files Created
+- `tests/test_logging_config.py` - asserts the suite itself has no file handler attached,
+  so this cannot silently regress
+
+### Files Modified
+- `config/logging_config.py` - `LOG_TO_FILE_ENV_VAR` gate
+- `tests/conftest.py` - sets the var before other imports
+- `README.md`
+
+### Verification
+A full suite run took the worktree log from 568 lines to 568 lines, and the service log on
+`main` from 81724 to 81724.
+
+---
+
 ## 2026-01-19: Email Digest Error Handling Fixes
 
 ### Problem
