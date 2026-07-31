@@ -14,6 +14,7 @@ A document processing pipeline for audio transcription and note management.
 - **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
 - **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks
 - **Interaction Logging** - Generates meeting notes for participants and brief context logs for mentioned people
+- **Todoist Sync** - Turns meeting action items and dictated todo memos into Todoist tasks, with AI-chosen project, section, due date, urgency and labels
 
 ### Note Processors
 | Processor | Description |
@@ -27,7 +28,7 @@ A document processing pipeline for audio transcription and note management.
 | `IdeaCleanupProcessor` | Cleans up idea notes |
 | `TodoProcessor` | Turns dictated todo memos into Todoist tasks |
 | `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
-| `TodoistSyncProcessor` | Pushes the user's meeting action items to Todoist (AI picks section, due date, urgency, labels) |
+| `TodoistSyncProcessor` | Pushes the user's meeting action items to Todoist (AI picks project, section, due date, urgency, labels) |
 | `InteractionLogger` | Logs interactions per person |
 | `EmailDigestProcessor` | Fetches daily important emails from Gmail with AI filtering |
 | `EmailSummaryGenerator` | Generates AI summaries for email digests and maintains monthly index |
@@ -184,13 +185,21 @@ launchctl unload ~/Library/LaunchAgents/com.maximefournes.noteflow.plist && laun
 
 #### Viewing Logs
 
-All output (stdout and stderr) is written to `logs/noteflow.log`:
+All output (stdout and stderr) is written to `logs/noteflow.log`, rotated by Python at
+50 MB with 5 backups (launchd does not rotate what it redirects):
 ```bash
 # Follow logs in real-time
 tail -f logs/noteflow.log
 
 # View last 50 lines
 tail -50 logs/noteflow.log
+```
+
+There is only one log file, so anything run alongside the service would interleave with
+it. Set `NOTEFLOW_LOG_TO_FILE=0` to log to stdout only — the test suite sets this for
+itself, and it is worth setting for one-off scripts:
+```bash
+NOTEFLOW_LOG_TO_FILE=0 python some_script.py
 ```
 
 ### Directory Structure
@@ -228,6 +237,7 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
 5. **Entity Resolution**: EntityResolver detects/resolves entities (AI detection + inline Obsidian form for human validation)
 6. **Processing**: Category-specific processors handle the rest
+7. **Task Sync**: For meetings, MeetingSummaryGenerator produces a summary the user validates, then TodoistSyncProcessor pushes his action items to Todoist. For `todo` memos, TodoProcessor pushes them directly (see [Todoist Sync](#todoist-sync))
 
 ### Email Processing Pipeline
 
@@ -259,9 +269,22 @@ processing_stages:
   - transcribed
   - classified
   - speakers_identified
+  - entities_resolved
+  - meeting_summarized
+  - todoist_synced
 category: meeting
+# Written by the Todoist stages, for traceability and reset
+todoist_tasks:
+  - id: '1234567890'
+    content: Review the draft and send feedback
+    action: created
 ---
 ```
+
+A stage runs only once per file: the base class skips any file whose
+`processing_stages` already lists it. Several stages also honour a
+`force_todoist_sync` / `force_meeting_summary` entry in `source_tags` to override
+their eligibility rules.
 
 ## License
 
