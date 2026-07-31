@@ -27,6 +27,7 @@ A document processing pipeline for audio transcription and note management.
 | `IdeaCleanupProcessor` | Cleans up idea notes |
 | `TodoProcessor` | Extracts todo items from transcripts |
 | `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
+| `TodoistSyncProcessor` | Pushes the user's meeting action items to Todoist (AI picks section, due date, urgency, labels) |
 | `InteractionLogger` | Logs interactions per person |
 | `EmailDigestProcessor` | Fetches daily important emails from Gmail with AI filtering |
 | `EmailSummaryGenerator` | Generates AI summaries for email digests and maintains monthly index |
@@ -88,7 +89,32 @@ ANTHROPIC_API_KEY=your_anthropic_key
 OPENAI_API_KEY=your_openai_key
 CODA_API_KEY=your_coda_key
 NOTION_API_KEY=your_notion_key
+TODOIST_API_TOKEN=your_todoist_token
 ```
+
+### Todoist Sync
+
+After a meeting summary is validated, `TodoistSyncProcessor` turns the action items the
+user owns into Todoist tasks. It reads the *validated* summary, so the human review gate
+in the Obsidian summary form is the only approval step — the sync itself is automatic.
+
+- One AI call per meeting decides ownership, wording, due date, urgency, project, section
+  and labels, using the live Todoist project/section/label lists and open tasks as context.
+- Every task returned by the AI must quote its source bullet verbatim, or it is discarded —
+  this keeps invented tasks out of Todoist.
+- Recurring commitments restated in a later meeting **update the existing open task**
+  (refreshed due date, appended note) instead of creating a duplicate.
+- The project and section are chosen from whatever exists in the account at the time, so
+  projects added later need no config change. Anything that doesn't clearly fit a project —
+  including personal matters — goes to the Inbox rather than being filed at a guess.
+- Labels are whitelist-only: the AI can only apply labels that already exist.
+- Projects listed in `TODOIST_IGNORED_PROJECTS` are never filed into, and their tasks are
+  left out of duplicate detection (Todoist's onboarding project is there by default).
+- Every task carries the `TODOIST_AI_LABEL` marker label, so AI-created tasks can be
+  filtered and cleaned up in bulk.
+- `START_DATE` in `processors/notes/todoist_sync.py` gates which meetings are eligible;
+  older transcripts are skipped unless tagged `force_todoist_sync`.
+- Without `TODOIST_API_TOKEN` the stage is inert (logs a warning, processes nothing).
 
 ## Usage
 

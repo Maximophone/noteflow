@@ -37,6 +37,7 @@ from processors.notes.conversation import ConversationProcessor
 from processors.notes.diary import DiaryProcessor
 from processors.notes.idea_cleanup import IdeaCleanupProcessor
 from processors.notes.todo import TodoProcessor
+from processors.notes.todoist_sync import TodoistSyncProcessor
 from processors.notes.interaction_logger import InteractionLogger
 from processors.audio.video_to_audio import VideoToAudioProcessor
 from processors.notes.base import NoteProcessor
@@ -100,6 +101,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         DiaryProcessor,
         IdeaCleanupProcessor,
         TodoProcessor,
+        TodoistSyncProcessor,
         InteractionLogger,
         InteractionLogger,
         NotionUploadProcessor,
@@ -141,6 +143,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
                 instance = cls(input_dir=PATHS.transcriptions, output_dir=PATHS.ideas)
             elif cls is TodoProcessor:
                 instance = cls(input_dir=PATHS.transcriptions, directory_file=PATHS.todo_directory)
+            elif cls is TodoistSyncProcessor:
+                instance = cls(input_dir=PATHS.transcriptions)
             elif cls is InteractionLogger:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is NotionUploadProcessor:
