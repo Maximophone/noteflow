@@ -25,12 +25,14 @@ TODOIST_AI_LABEL = "ai-generated"
 # a label says where a task came from, not everywhere it has since been mentioned.
 TODOIST_LABEL_FROM_MEETING = "from-meeting"
 TODOIST_LABEL_FROM_VOICE_MEMO = "from-voice-memo"
+TODOIST_LABEL_FROM_IDEA_NOTE = "from-idea-note"
 
 # All of them, so no stage offers another stage's provenance label to the model as a
 # topical choice. Add any new one here as well as on its processor.
 TODOIST_PROVENANCE_LABELS = [
     TODOIST_LABEL_FROM_MEETING,
     TODOIST_LABEL_FROM_VOICE_MEMO,
+    TODOIST_LABEL_FROM_IDEA_NOTE,
 ]
 
 # Labels the AI must never apply, beyond the managed ones above. "human-approved" is

@@ -14,7 +14,7 @@ A document processing pipeline for audio transcription and note management.
 - **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
 - **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks
 - **Interaction Logging** - Generates meeting notes for participants and brief context logs for mentioned people
-- **Todoist Sync** - Turns meeting action items and dictated todo memos into Todoist tasks, with AI-chosen project, section, due date, urgency and labels
+- **Todoist Sync** - Turns meeting action items, dictated todo memos and commitments buried in idea notes into Todoist tasks, with AI-chosen project, section, due date, urgency and labels
 
 ### Note Processors
 | Processor | Description |
@@ -26,6 +26,7 @@ A document processing pipeline for audio transcription and note management.
 | `DiaryProcessor` | Formats diary entries |
 | `IdeaProcessor` | Extracts and logs ideas to a directory |
 | `IdeaCleanupProcessor` | Cleans up idea notes |
+| `IdeaTaskProcessor` | Pulls commitments out of idea notes into Todoist (biased to the Inbox) |
 | `TodoProcessor` | Turns dictated todo memos into Todoist tasks |
 | `MeetingSummaryGenerator` | Generates meeting summaries with user validation and monthly index |
 | `TodoistSyncProcessor` | Pushes the user's meeting action items to Todoist (AI picks project, section, due date, urgency, labels) |
@@ -95,15 +96,23 @@ TODOIST_API_TOKEN=your_todoist_token
 
 ### Todoist Sync
 
-Two stages push tasks to Todoist, sharing all their machinery via
+Three stages push tasks to Todoist, sharing all their machinery via
 `processors/notes/todoist_base.py`:
 
 | Stage | Source | Ownership | Provenance label |
 |-------|--------|-----------|------------------|
 | `todoist_synced` (`TodoistSyncProcessor`) | `## Action Items` from a validated meeting summary | AI decides which items the user owns | `from-meeting` |
 | `todos_extracted` (`TodoProcessor`) | The body of a `category: todo` voice memo | All of them — the user dictated it | `from-voice-memo` |
+| `idea_tasks_synced` (`IdeaTaskProcessor`) | The body of a `category: idea` monologue | All of them — but most notes yield none | `from-idea-note` |
 
-Adding a third source (email, say) means a new subclass with its own prompt, plus a
+Idea notes are the loosest source: they are thinking out loud, and most contain no tasks
+at all, so that prompt sets a high bar and treats an empty result as the normal outcome.
+It exists because the classifier files anything monologue-shaped as an `idea`, so working
+sessions land there alongside pure reflection. Because a rambling note is weak evidence of
+where a task belongs, that stage biases hard toward the Inbox — it only picks a project
+for concrete professional work that clearly belongs to one.
+
+Adding a further source (email, say) means a new subclass with its own prompt, plus a
 `from-email` constant added to `TODOIST_PROVENANCE_LABELS` in `config/user_config.py`.
 
 For meetings, the action items come from the *validated* summary, so the human review gate
@@ -112,7 +121,7 @@ in the Obsidian summary form is the only approval step — the sync itself is au
 - One AI call per note decides wording, due date, urgency, project, section
   and labels, using the live Todoist project/section/label lists and open tasks as context.
 - Every task returned by the AI must quote its source verbatim — a summary bullet, or a
-  phrase from the memo — or it is discarded. This keeps invented tasks out of Todoist.
+  phrase from the note body — or it is discarded. This keeps invented tasks out of Todoist.
 - A commitment restated in a later note **updates the existing open task** (refreshed due
   date, appended note and link) instead of creating a duplicate. Both recurring meeting
   action items and re-dictated memos hit this often.
@@ -124,8 +133,9 @@ in the Obsidian summary form is the only approval step — the sync itself is au
   `TODOIST_RESERVED_LABELS` (`human-approved` by default, since a review marker the AI
   could stamp would mean nothing).
 - Each stage stamps a **provenance label** recording where the task came from:
-  `from-meeting` or `from-voice-memo`, created automatically if absent. It goes on at
-  creation only — a task restated in a later note keeps its original provenance.
+  `from-meeting`, `from-voice-memo` or `from-idea-note`, created automatically if absent.
+  It goes on at creation only — a task restated in a later note keeps its original
+  provenance.
 - Projects listed in `TODOIST_IGNORED_PROJECTS` are never filed into, and their tasks are
   left out of duplicate detection (Todoist's onboarding project is there by default).
 - Every task carries the `TODOIST_AI_LABEL` marker label, so AI-created tasks can be
@@ -134,7 +144,7 @@ in the Obsidian summary form is the only approval step — the sync itself is au
   forward to today, with the original kept in the description.
 - Each stage's `START_DATE` gates eligibility; older notes are skipped unless tagged
   `force_todoist_sync`.
-- Without `TODOIST_API_TOKEN` both stages are inert (log a warning, process nothing).
+- Without `TODOIST_API_TOKEN` all three stages are inert (log a warning, process nothing).
 
 ## Usage
 
