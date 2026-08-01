@@ -4,6 +4,86 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-01: Extracting Commitments from Idea Notes
+
+### Problem
+Todos were being extracted from meetings and `todo` memos, but not from `idea` notes. The
+question was whether they should be — the classifier defines `idea` as "a monologue about
+new ideas, projects, or creative thoughts", explicitly the *non*-actionable category, and
+there are 148 of them against 30 todo memos.
+
+### Investigation
+Rather than reason about it, the existing memo extractor was run over the 8 most recent
+idea notes with no writes, to see what would actually land:
+
+| note | proposed |
+|------|----------|
+| Peaceful AI Safety Advocacy | 0 |
+| Shaping the AI Safety Movement | 0 |
+| Strength Without Breaking | 0 |
+| Le temple du progrès | 0 |
+| The Russian Doll Reality | 0 |
+| Pause AI Article Brainstorming | 2 (1 a duplicate of an open task) |
+| driving | 1 |
+| **matilda-rui** | **4** (1 a duplicate) |
+
+The prediction going in — that idea notes would flood the inflow — was **wrong**. Five of
+eight produced nothing; the extractor stays quiet on reflective notes.
+
+The case for the stage rests on `2026-04-20-matilda-rui.md`, which is classified `idea`
+but is plainly a working session: review Ben's Germany application, work on the UK funding
+application, review Matilda's SFF application, discuss rebranding. Real commitments that
+were going nowhere. The classifier calls anything monologue-shaped an `idea`, so 1:1s and
+thinking-aloud working sessions land there next to philosophy — and only the philosophy is
+genuinely task-free.
+
+### Solution
+`IdeaTaskProcessor`, a third `TodoistTaskSync` subclass, on `category: idea`.
+
+The prompt differs from the memo one in two ways that matter:
+
+1. **An empty result is framed as the normal outcome**, with an explicit bar for what
+   counts: a decision to do a specific concrete thing. Reasoning through whether to do
+   something is not deciding to do it; content being drafted inside the note is the note's
+   subject, not a todo.
+2. **Filing biases hard to the Inbox.** A rambling note is much weaker evidence of where a
+   task belongs than a meeting or a dictated todo, so `project` defaults to null and is
+   only chosen for concrete professional work that unambiguously belongs to one. This was
+   the user's call: "most of them should land in the inbox, but some of them will
+   correspond to pause ai work and projects".
+
+### Key Design Decisions
+- **A new stage name means the gate is the only thing holding back 148 notes.** Unlike the
+  todo memos, which kept `todos_extracted` and were therefore already all marked done,
+  `idea_tasks_synced` is new. `START_DATE = 2026-07-31` is load-bearing here, not just
+  belt-and-braces.
+- **Its own provenance label**, `from-idea-note`, so the lowest-confidence source can be
+  reviewed and bulk-cleaned separately from the other two.
+- **A larger transcript cap** (20000 vs 8000 chars): idea notes ramble, and one recent
+  note runs to 25 KB.
+- **Hangs off `speakers_identified`**, not `ideas_extracted`, so it does not couple to
+  IdeaProcessor. The note body does not change after speaker identification.
+
+### Key Learnings
+- **Test the hypothesis against the real pipeline before designing around it.** The
+  volume argument against this stage was intuitive, plausible, and wrong. Eight AI calls
+  settled what no amount of reading the classifier prompt would have.
+- **A classifier boundary is not a semantic one.** "Idea" here means "monologue", not
+  "not actionable" — which is exactly why the actionable content in those notes was
+  invisible.
+
+### Files Created
+- `processors/notes/idea_tasks.py` - `IdeaTaskProcessor`
+- `prompts/idea_todoist_tasks.md` - high-bar extraction, Inbox-biased filing
+- `tests/test_idea_tasks.py` - 12 tests
+
+### Files Modified
+- `config/user_config.py` - `TODOIST_LABEL_FROM_IDEA_NOTE`, added to the provenance list
+- `main.py` - registered the processor
+- `README.md`
+
+---
+
 ## 2026-07-31: Todoist Sync for Meeting Action Items and Todo Memos
 
 ### Problem

@@ -26,6 +26,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from processors.audio.transcriber import AudioTranscriber
 from processors.notes.meditation import MeditationProcessor
 from processors.notes.ideas import IdeaProcessor
+from processors.notes.idea_tasks import IdeaTaskProcessor
 from processors.notes.gdoc import GDocProcessor
 from processors.notes.coda import CodaProcessor
 from processors.notes.notion import NotionProcessor
@@ -90,6 +91,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
     note_processor_classes = [
         MeditationProcessor,
         IdeaProcessor,
+        IdeaTaskProcessor,
         GDocProcessor,
         CodaProcessor,
         NotionProcessor,
@@ -144,6 +146,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
             elif cls is TodoProcessor:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is TodoistSyncProcessor:
+                instance = cls(input_dir=PATHS.transcriptions)
+            elif cls is IdeaTaskProcessor:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is InteractionLogger:
                 instance = cls(input_dir=PATHS.transcriptions)
