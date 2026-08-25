@@ -59,6 +59,9 @@ discord.py>=2.0.0
 # Scheduling
 apscheduler>=3.0.0
 
+# Quick capture panel (macOS only: Cocoa UI + Carbon global hotkey)
+pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'
+
 # Windows-only packages (will be skipped on macOS/Linux)
 pywin32>=308; sys_platform == 'win32'
 

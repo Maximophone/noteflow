@@ -8,6 +8,7 @@ A document processing pipeline for audio transcription and note management.
 - **Video to Audio Extraction** - Extracts audio from video files using FFmpeg
 - **Audio Transcription** - Transcribes audio files using AssemblyAI with speaker diarization
 - **Title Generation** - AI-generated titles for transcripts based on content
+- **Quick Capture** - A global hotkey (⌃⌥Space) pops up a panel to dictate a todo or an idea straight into the pipeline, no files to move by hand
 
 ### Note Processing Pipeline
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
@@ -158,6 +159,40 @@ With custom log level:
 ```bash
 python main.py --log-level DEBUG
 ```
+
+### Quick Capture (macOS)
+
+A separate little app that turns a keypress into a voice memo the pipeline
+already knows how to handle. Start it in its own terminal:
+
+```bash
+python -m quickcapture
+```
+
+Press **⌃⌥Space** and a panel appears: `T` records a todo, `I` records an idea,
+`esc` cancels. The rows are clickable too. While recording, `⏎` saves and `esc`
+discards; pressing ⌃⌥Space again also saves. The memo lands in `Audio/Incoming`
+named so the transcriber picks it up and the classifier is forced to the right
+category, and from there it is the normal pipeline — transcription, then
+Todoist.
+
+Useful flags: `--hotkey cmd+shift+space` to rebind, `--incoming DIR` to point at
+a scratch folder while testing, `--quit-after SECONDS` as a safety valve.
+
+It runs as its own process on purpose: a Cocoa event loop wants the main
+thread, and this way a GUI problem can never take the processing service down.
+It talks to the pipeline only by writing a file into `Audio/Incoming`.
+
+Adding another capture action is one file in `quickcapture/actions/` — subclass
+`Action`, decorate it with `@register`, and the panel picks up the row, the key
+hint and the click handler by itself.
+
+#### Microphone permission
+
+The first recording triggers a microphone prompt. Because the recorder shells
+out to ffmpeg, macOS attributes the request to the Python binary, so grant it
+once while running from a terminal. If recordings come back empty, check
+System Settings › Privacy & Security › Microphone.
 
 ### Running as a Background Service (macOS)
 
