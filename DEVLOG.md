@@ -4,6 +4,74 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-25: Live Dictation to the Clipboard
+
+### Problem
+Wanted a third capture action: speak, watch the text appear, edit it, paste it
+somewhere. Not a pipeline capture at all — a dictation tool that happens to live in the
+same panel.
+
+### Investigation
+The installed SDK (0.48.3) exposes both the legacy realtime API (`RealtimeTranscriber`)
+and Universal-Streaming under `assemblyai.streaming.v3`. The v3 API is the current one, so
+that is what this uses.
+
+Tested by streaming an existing memo through the API at real-time pace rather than by
+talking at it — the same recording that had just gone through the pipeline. Text arrived
+1.3s in and the turns assembled into exactly the right sentence, which validated auth,
+protocol and latency before any UI existed.
+
+### Solution
+`quickcapture/livetranscript.py` plus a `transcript` panel state with an `NSTextView`.
+ffmpeg produces 16 kHz mono PCM on stdout, a worker thread feeds it to the streaming
+client, and turn events are folded into a running transcript that the panel renders live.
+
+`⏎` stops and copies; the box then becomes editable, and `esc` re-copies (edits included)
+before closing, so the clipboard always matches what was last on screen.
+
+### Key Design Decisions
+- **Turn events are revisions, not appends.** Each carries a `turn_order`, and successive
+  events restate that turn as it is refined. `TranscriptBuffer` therefore keeps the latest
+  text *per turn* and joins in order. A formatted revision is never replaced by an
+  unformatted one, which can arrive late and undo the punctuation.
+- **Read-only while listening, editable after.** Appending into a box the user is editing
+  would fight their caret. The transition is the one point where the panel is rebuilt.
+- **The key monitor must get out of the way.** The panel swallows all keystrokes while it
+  is up, which would have made the text box untypable. It now passes everything except
+  Escape through once the transcript is editable — `⌘C` included.
+- **No auto-dismiss for this state.** Every other panel state closes when it loses focus;
+  this one must not, or clicking away discards text the user may have edited.
+- **ffmpeg again, rather than a second audio dependency.** Raw PCM on stdout is all the
+  streaming client wants, and ffmpeg is already required for recording.
+
+### Key Learnings
+- **A fake ffmpeg is a clean seam for testing audio code.** Passing a wrapper script as
+  the `ffmpeg` path — one that ignores the avfoundation arguments and streams a file with
+  `-re` instead — exercised the entire pipeline end to end with real speech, with no
+  test-only branches in the production path.
+- **The SDK logs `Unsupported event type: SpeechStarted` once per utterance**
+  (`assemblyai.streaming.v3.client`, a `logger.warning`). Silenced at that logger, or it
+  would bury the real lines in a long dictation.
+
+### Files Created
+- `quickcapture/livetranscript.py` - streaming client, `TranscriptBuffer`
+- `quickcapture/actions/live_transcript.py` - the `D` action
+
+### Files Modified
+- `quickcapture/panel.py` - transcript state, variable panel width, `wants_raw_keys`
+- `quickcapture/app.py` - dictation flow, clipboard, key routing
+- `quickcapture/actions/__init__.py` - `start_live_transcript` on the context protocol
+- `tests/test_quickcapture.py` - 6 buffer tests
+- `README.md`
+
+### Verification
+- 33 tests pass in the module's suite.
+- End to end against a real recording: text from 1.3s, final transcript exact.
+- Clipboard and text-view round-trips asserted; both transcript states rendered and
+  reviewed.
+
+---
+
 ## 2026-08-25: Quick Capture — a Hotkey Panel as a Pipeline Entry Point
 
 ### Problem

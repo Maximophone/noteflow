@@ -9,6 +9,7 @@ A document processing pipeline for audio transcription and note management.
 - **Audio Transcription** - Transcribes audio files using AssemblyAI with speaker diarization
 - **Title Generation** - AI-generated titles for transcripts based on content
 - **Quick Capture** - A global hotkey (⌃⌥Space) pops up a panel to dictate a todo or an idea straight into the pipeline, no files to move by hand
+- **Live Dictation** - The same panel can transcribe as you speak and put the text on the clipboard, editable before you paste it
 
 ### Note Processing Pipeline
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
@@ -183,11 +184,24 @@ python -m quickcapture
 ```
 
 Press **⌃⌥Space** and a panel appears: `T` records a todo, `I` records an idea,
-`esc` cancels. The rows are clickable too. While recording, `⏎` saves and `esc`
-discards; pressing ⌃⌥Space again also saves. The memo lands in `Audio/Incoming`
-named so the transcriber picks it up and the classifier is forced to the right
-category, and from there it is the normal pipeline — transcription, then
-Todoist.
+`D` dictates to the clipboard, `esc` cancels. The rows are clickable too. While
+recording, `⏎` saves and `esc` discards; pressing ⌃⌥Space again also saves. The
+memo lands in `Audio/Incoming` named so the transcriber picks it up and the
+classifier is forced to the right category, and from there it is the normal
+pipeline — transcription, then Todoist.
+
+#### Dictate to clipboard (`D`)
+
+The odd one out: it does not touch the pipeline. Audio streams to AssemblyAI's
+Universal-Streaming API and the text appears in the panel as you speak. `⏎`
+stops and copies it to the clipboard; the box then becomes editable, so you can
+fix a name before pasting. `esc` copies whatever is in the box — edits included
+— and closes, so the clipboard always matches what you last saw.
+
+The panel deliberately stays put if you click away mid-dictation or while
+editing, since closing it would throw the text away. Streaming is billed per
+minute of connected session, so the session opens when you start and closes the
+moment you stop.
 
 Useful flags: `--hotkey cmd+shift+space` to rebind, `--incoming DIR` to point at
 a scratch folder while testing, `--quit-after SECONDS` as a safety valve.

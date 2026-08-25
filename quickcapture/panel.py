@@ -16,8 +16,9 @@ from typing import Callable, Optional, Sequence, Tuple
 import AppKit
 import objc
 from AppKit import (
-    NSColor, NSFont, NSMakeRect, NSObject, NSPanel, NSScreen, NSTextField,
-    NSTrackingArea, NSView, NSVisualEffectView,
+    NSColor, NSFont, NSMakeRange, NSMakeRect, NSObject, NSPanel, NSScreen,
+    NSScrollView, NSTextField, NSTextView, NSTrackingArea, NSView,
+    NSVisualEffectView,
 )
 
 # PyObjC warns each time a CGColorRef crosses the bridge (layer background
@@ -42,6 +43,8 @@ _COLLECTION_CAN_JOIN_ALL_SPACES = 1 << 0
 _COLLECTION_FULLSCREEN_AUXILIARY = 1 << 8
 
 PANEL_WIDTH = 460.0
+TRANSCRIPT_WIDTH = 620.0   # dictation needs room to read a paragraph
+TRANSCRIPT_H = 190.0
 PAD_X = 22.0
 PAD_TOP = 16.0
 PAD_BOTTOM = 14.0
@@ -167,14 +170,17 @@ class CapturePanel:
         self._delegate = None
         self._on_resign_key = on_resign_key
         self._time_field: Optional[NSTextField] = None
+        self._text_view: Optional[NSTextView] = None
+        self._width: float = PANEL_WIDTH
         self.state: str = "hidden"
 
     # ------------------------------------------------------------------ window
 
-    def _ensure_panel(self, height: float):
+    def _ensure_panel(self, height: float, width: float = PANEL_WIDTH):
+        self._width = width
         if self._panel is None:
             self._panel = _Panel.alloc().initWithContentRect_styleMask_backing_defer_(
-                NSMakeRect(0, 0, PANEL_WIDTH, height), _STYLE_BORDERLESS,
+                NSMakeRect(0, 0, width, height), _STYLE_BORDERLESS,
                 _BACKING_BUFFERED, False,
             )
             self._panel.setLevel_(_LEVEL_STATUS)
@@ -190,12 +196,12 @@ class CapturePanel:
 
         panel = self._panel
         screen = (NSScreen.mainScreen() or NSScreen.screens()[0]).frame()
-        x = screen.origin.x + (screen.size.width - PANEL_WIDTH) / 2
+        x = screen.origin.x + (screen.size.width - width) / 2
         y = screen.origin.y + (screen.size.height - height) / 2 + 140
-        panel.setFrame_display_(NSMakeRect(x, y, PANEL_WIDTH, height), False)
+        panel.setFrame_display_(NSMakeRect(x, y, width, height), False)
 
         blur = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, PANEL_WIDTH, height)
+            NSMakeRect(0, 0, width, height)
         )
         blur.setMaterial_(_MATERIAL_HUD)
         blur.setBlendingMode_(_BLENDING_BEHIND_WINDOW)
@@ -218,12 +224,12 @@ class CapturePanel:
         for key_hint, text, callback in rows:
             y -= ROW_H
             row = _Row.alloc().initWithFrame_(
-                NSMakeRect(PAD_X - 10, y, PANEL_WIDTH - 2 * (PAD_X - 10), ROW_H)
+                NSMakeRect(PAD_X - 10, y, self._width - 2 * (PAD_X - 10), ROW_H)
             )
             row.set_callback(callback)
             row.addSubview_(_key_cap(key_hint, 10, ROW_H))
             row.addSubview_(_label(
-                text, NSMakeRect(LABEL_X, (ROW_H - 22) / 2, 300, 22), size=15.0,
+                text, NSMakeRect(LABEL_X, (ROW_H - 22) / 2, 380, 22), size=15.0,
             ))
             content.addSubview_(row)
         return y
@@ -321,12 +327,99 @@ class CapturePanel:
         self._time_field = None
         self._present()
 
+    def show_transcript(
+        self,
+        title: str,
+        text: str,
+        rows: Sequence[Row],
+        *,
+        editable: bool,
+        hint: str = "",
+    ) -> None:
+        """A scrollable transcript, read-only while dictating and editable after.
+
+        Rebuilt only on the transition between those two, so live updates never
+        disturb a selection or the caret.
+        """
+        height = (
+            PAD_TOP + HEADER_H + TRANSCRIPT_H + 10 + ROW_H * len(rows)
+            + (FOOTER_H if hint else 0) + PAD_BOTTOM
+        )
+        panel = self._ensure_panel(height, width=TRANSCRIPT_WIDTH)
+        content = panel.contentView()
+
+        y = height - PAD_TOP - HEADER_H
+        content.addSubview_(_label(
+            title, NSMakeRect(PAD_X, y + 4, TRANSCRIPT_WIDTH - 2 * PAD_X, 22),
+            size=13.0, color=NSColor.secondaryLabelColor(), bold=True,
+        ))
+
+        y -= TRANSCRIPT_H + 6
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(PAD_X, y, TRANSCRIPT_WIDTH - 2 * PAD_X, TRANSCRIPT_H)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setDrawsBackground_(False)
+        scroll.setBorderType_(0)
+
+        text_view = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, TRANSCRIPT_WIDTH - 2 * PAD_X, TRANSCRIPT_H)
+        )
+        text_view.setFont_(NSFont.systemFontOfSize_(14.0))
+        text_view.setTextColor_(NSColor.labelColor())
+        text_view.setDrawsBackground_(False)
+        text_view.setEditable_(editable)
+        text_view.setSelectable_(True)
+        text_view.setRichText_(False)
+        # Straight quotes and no autocorrect: this text is going into other apps.
+        text_view.setAutomaticQuoteSubstitutionEnabled_(False)
+        text_view.setAutomaticDashSubstitutionEnabled_(False)
+        text_view.setAutomaticSpellingCorrectionEnabled_(False)
+        text_view.setString_(text)
+        scroll.setDocumentView_(text_view)
+        content.addSubview_(scroll)
+        self._text_view = text_view
+
+        y = self._add_rows(content, rows, y - 4)
+
+        if hint:
+            content.addSubview_(_label(
+                hint, NSMakeRect(PAD_X, PAD_BOTTOM - 2, TRANSCRIPT_WIDTH - 2 * PAD_X, 18),
+                size=11.0, color=NSColor.tertiaryLabelColor(),
+            ))
+
+        self.state = "transcript" if editable else "transcribing"
+        self._time_field = None
+        self._present()
+        if editable:
+            panel.makeFirstResponder_(text_view)
+
+    def update_transcript(self, text: str) -> None:
+        """Replace the live text and keep the tail in view."""
+        if self._text_view is None or self.state != "transcribing":
+            return
+        self._text_view.setString_(text)
+        self._text_view.scrollRangeToVisible_(NSMakeRange(len(text), 0))
+
+    @property
+    def transcript_text(self) -> str:
+        """Whatever is in the box now, including the user's edits."""
+        if self._text_view is None:
+            return ""
+        return str(self._text_view.string())
+
     def hide(self) -> None:
         if self._panel is not None:
             self._panel.orderOut_(None)
         self.state = "hidden"
         self._time_field = None
+        self._text_view = None
 
     @property
     def is_visible(self) -> bool:
         return self.state != "hidden"
+
+    @property
+    def wants_raw_keys(self) -> bool:
+        """True when the user is typing and the app must not swallow keystrokes."""
+        return self.state == "transcript"

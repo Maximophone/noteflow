@@ -21,7 +21,7 @@ import AppKit
 import objc
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSApp, NSEvent,
-    NSEventMaskKeyDown,
+    NSEventMaskKeyDown, NSPasteboard, NSPasteboardTypeString,
 )
 from Foundation import NSOperationQueue, NSPoint, NSTimer
 
@@ -30,6 +30,7 @@ from config.paths import PATHS
 
 from .actions import Action, actions
 from .hotkey import HotKey, HotKeyError, format_combo
+from .livetranscript import LiveTranscriber, LiveTranscriptError
 from .panel import CapturePanel
 from .recorder import Recorder, RecorderError
 
@@ -45,6 +46,12 @@ _EVENT_APPLICATION_DEFINED = getattr(AppKit, "NSEventTypeApplicationDefined", 15
 # If the run loop somehow refuses to unwind, leave anyway rather than becoming a
 # process that ignores SIGTERM and holds the global hotkey hostage.
 HARD_EXIT_GRACE = 2.0
+
+
+def _copy_to_clipboard(text: str) -> None:
+    pasteboard = NSPasteboard.generalPasteboard()
+    pasteboard.clearContents()
+    pasteboard.setString_forType_(text, NSPasteboardTypeString)
 
 
 def _acquire_single_instance_lock():
@@ -78,6 +85,7 @@ class QuickCapture:
         show_on_start: bool = False,
     ):
         self.recorder = Recorder(incoming_dir or PATHS.audio_input)
+        self.live: Optional[LiveTranscriber] = None
         self.panel = CapturePanel(on_resign_key=self._on_resign_key)
         self.hotkey = HotKey(hotkey, self._on_hotkey)
         self.hotkey_label = format_combo(hotkey)
@@ -109,6 +117,32 @@ class QuickCapture:
             ("esc", "Discard", self._discard),
         ])
         self._start_tick()
+
+    def start_live_transcript(self, label: str) -> None:
+        """Dictate to the clipboard: text streams in, then becomes editable."""
+        transcriber = LiveTranscriber(
+            on_update=lambda text: self._on_main(
+                lambda: self.panel.update_transcript(text)
+            ),
+            on_error=lambda message: self._on_main(
+                lambda: self._live_failed(message)
+            ),
+        )
+        try:
+            transcriber.start()
+        except LiveTranscriptError as exc:
+            logger.error("could not start live transcription: %s", exc)
+            self.show_error(str(exc))
+            return
+
+        self.live = transcriber
+        self.panel.show_transcript(
+            "Listening…", "",
+            [("⏎", "Stop and copy", self._stop_live_transcript),
+             ("esc", "Discard", self._discard_live_transcript)],
+            editable=False,
+            hint="text appears as you speak; you can edit it after stopping",
+        )
 
     def dismiss(self) -> None:
         """Hide the panel and hand focus back to the app the user was in."""
@@ -178,6 +212,48 @@ class QuickCapture:
         self.recorder.cancel()
         self.dismiss()
 
+    # ------------------------------------------------------------------ dictation
+
+    def _stop_live_transcript(self) -> None:
+        if self.live is None:
+            return
+        text = self.live.stop()
+        self.live = None
+        if not text.strip():
+            self.show_error("Nothing was transcribed — was anything said?")
+            return
+
+        # Copy straight away so the common case (speak, paste) needs no extra
+        # keystroke; closing re-copies, in case the text was edited.
+        _copy_to_clipboard(text)
+        logger.info("transcript copied to clipboard (%d chars)", len(text))
+        self.panel.show_transcript(
+            "Transcript — copied to clipboard", text,
+            [("esc", "Copy and close", self._close_live_transcript)],
+            editable=True,
+            hint="edit freely; ⌘C copies your selection, esc copies everything and closes",
+        )
+
+    def _close_live_transcript(self) -> None:
+        """Re-copy on the way out so the clipboard matches what is on screen."""
+        text = self.panel.transcript_text
+        if text.strip():
+            _copy_to_clipboard(text)
+        self.dismiss()
+
+    def _discard_live_transcript(self) -> None:
+        if self.live is not None:
+            self.live.stop()
+            self.live = None
+        logger.info("live transcript discarded")
+        self.dismiss()
+
+    def _live_failed(self, message: str) -> None:
+        if self.live is not None:
+            self.live.stop()
+            self.live = None
+        self.show_error(message)
+
     def _start_tick(self) -> None:
         self._stop_tick()
         self._tick_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
@@ -205,9 +281,13 @@ class QuickCapture:
     # ------------------------------------------------------------------ input
 
     def _on_hotkey(self) -> None:
-        """Toggle: stop a recording, or dismiss the panel, or show the menu."""
+        """Toggle: finish whatever is in progress, or dismiss, or show the menu."""
         if self.recorder.is_recording:
             self._stop_and_save()
+        elif self.live is not None:
+            self._stop_live_transcript()
+        elif self.panel.state == "transcript":
+            self._close_live_transcript()
         elif self.panel.is_visible:
             self.dismiss()
         else:
@@ -221,12 +301,26 @@ class QuickCapture:
         chars = (event.charactersIgnoringModifiers() or "").lower()
 
         if code == KEY_ESCAPE:
-            self._discard() if self.recorder.is_recording else self.dismiss()
+            if self.recorder.is_recording:
+                self._discard()
+            elif self.live is not None:
+                self._discard_live_transcript()
+            elif self.panel.state == "transcript":
+                self._close_live_transcript()
+            else:
+                self.dismiss()
             return None
+
+        # Editing a finished transcript: everything except Escape belongs to the
+        # text view, including ⌘C and every character typed.
+        if self.panel.wants_raw_keys:
+            return event
 
         if code in (KEY_RETURN, KEY_ENTER):
             if self.recorder.is_recording:
                 self._stop_and_save()
+            elif self.live is not None:
+                self._stop_live_transcript()
             return None
 
         if self.panel.state == "menu":
@@ -238,8 +332,12 @@ class QuickCapture:
         return None  # the panel is modal while up; swallow everything else
 
     def _on_resign_key(self) -> None:
-        """Clicking elsewhere dismisses the menu; a recording keeps going."""
-        if self.recorder.is_recording:
+        """Clicking elsewhere dismisses the menu only.
+
+        A recording or a live session keeps going, and a finished transcript
+        stays up — closing it silently would throw away edits the user made.
+        """
+        if self.recorder.is_recording or self.live is not None:
             return
         if self.panel.state in ("menu", "message"):
             self.dismiss()
@@ -340,6 +438,12 @@ class QuickCapture:
                 logger.info("saved in-progress recording on shutdown: %s", dest.name)
             except RecorderError as exc:
                 logger.error("lost in-progress recording on shutdown: %s", exc)
+        if self.live is not None:
+            text = self.live.stop()
+            self.live = None
+            if text.strip():
+                _copy_to_clipboard(text)
+                logger.info("copied in-progress transcript on shutdown")
         self.hotkey.unregister()
 
 

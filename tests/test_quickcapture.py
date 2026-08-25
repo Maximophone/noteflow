@@ -13,6 +13,7 @@ import pytest
 
 from quickcapture.actions import Action, actions, register
 from quickcapture.hotkey import HotKeyError, format_combo, parse_combo
+from quickcapture.livetranscript import TranscriptBuffer
 from quickcapture.recorder import Recorder, RecorderError, build_filename
 
 
@@ -94,12 +95,52 @@ class TestDelivery:
             recorder.stop()
 
 
+class TestTranscriptBuffer:
+    """Turn events are successive revisions of a turn, not text to append."""
+
+    def test_revisions_replace_rather_than_accumulate(self):
+        buf = TranscriptBuffer()
+        buf.update(0, "I need", False)
+        buf.update(0, "I need to handle", False)
+        buf.update(0, "I need to handle the situation.", True)
+        assert buf.text == "I need to handle the situation."
+
+    def test_turns_join_in_order(self):
+        buf = TranscriptBuffer()
+        buf.update(1, "By the end of today.", True)
+        buf.update(0, "I need to handle Didier.", True)
+        assert buf.text == "I need to handle Didier. By the end of today."
+
+    def test_formatted_text_is_not_clobbered_by_a_late_unformatted_revision(self):
+        buf = TranscriptBuffer()
+        buf.update(0, "Okay, um.", True)
+        buf.update(0, "okay um", False)
+        assert buf.text == "Okay, um."
+
+    def test_a_formatted_revision_still_wins_over_a_formatted_one(self):
+        buf = TranscriptBuffer()
+        buf.update(0, "Hello.", True)
+        buf.update(0, "Hello there.", True)
+        assert buf.text == "Hello there."
+
+    def test_empty_turns_are_skipped(self):
+        buf = TranscriptBuffer()
+        buf.update(0, "Hello.", True)
+        buf.update(1, "", False)
+        buf.update(2, "World.", True)
+        assert buf.text == "Hello. World."
+
+    def test_starts_empty(self):
+        assert TranscriptBuffer().text == ""
+
+
 class TestActionRegistry:
-    def test_ships_todo_and_idea(self):
+    def test_ships_todo_idea_and_dictation(self):
         by_key = {a.key: a for a in actions()}
-        assert set(by_key) >= {"t", "i"}
+        assert set(by_key) >= {"t", "i", "d"}
         assert by_key["t"].label == "Record todo"
         assert by_key["i"].label == "Record idea"
+        assert by_key["d"].label == "Dictate to clipboard"
 
     def test_keys_are_unique(self):
         keys = [a.key for a in actions()]
