@@ -26,7 +26,8 @@ if [[ -z "${MEMO_INCOMING:-}" ]]; then
     MEMO_INCOMING="${candidates[1]:-}"
 fi
 
-STATE_DIR="/tmp/noteflow-memo-$USER"
+# $USER is unset in the environment macOS Shortcuts runs scripts in.
+STATE_DIR="/tmp/noteflow-memo-$(id -un)"
 mkdir -p "$STATE_DIR"
 PIDFILE="$STATE_DIR/rec.pid"
 TMPOUT="$STATE_DIR/rec.m4a"
