@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.maximefournes.noteflow.quickcapture</string>
+
+    <!-- The quick-capture panel: a global hotkey that records todo and idea
+         memos into Audio/Incoming. Separate from the processing service so a
+         UI fault cannot take the pipeline down. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/maximefournes/code/noteflow/.venv/bin/python</string>
+        <string>-m</string>
+        <string>quickcapture</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/maximefournes/code/noteflow</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Only one instance can own the hotkey, so a duplicate exits immediately;
+         this keeps launchd from spinning on that. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Logs to its own file rather than the pipeline's noteflow.log: two
+         processes sharing one RotatingFileHandler can clobber each other when
+         the file rotates. NOTEFLOW_LOG_TO_FILE=0 makes the logger write to
+         stdout, which launchd captures here. -->
+    <key>StandardOutPath</key>
+    <string>/Users/maximefournes/code/noteflow/logs/quickcapture.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/maximefournes/code/noteflow/logs/quickcapture.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/maximefournes/code/noteflow/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>NOTEFLOW_LOG_TO_FILE</key>
+        <string>0</string>
+    </dict>
+</dict>
+</plist>

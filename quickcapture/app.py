@@ -269,9 +269,10 @@ class QuickCapture:
             signal.signal(sig, self._on_signal)
         # Cocoa's run loop blocks Python's signal handling; this timer gives the
         # interpreter a chance to run handlers (so ctrl-C works), and notices
-        # when one has asked us to quit.
+        # when one has asked us to quit. One second keeps idle wakeups low —
+        # this process spends months doing nothing.
         NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
-            0.3, True, lambda timer: self._quit() if self._should_quit else None
+            1.0, True, lambda timer: self._quit() if self._should_quit else None
         )
         if self.quit_after:
             NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
