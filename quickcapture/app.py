@@ -9,16 +9,21 @@ here can never take processing down with it.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
 import signal
+import tempfile
 import threading
+from pathlib import Path
 from typing import List, Optional
 
+import AppKit
 import objc
 from AppKit import (
     NSApplication, NSApplicationActivationPolicyAccessory, NSApp, NSEvent,
     NSEventMaskKeyDown,
 )
-from Foundation import NSOperationQueue, NSTimer
+from Foundation import NSOperationQueue, NSPoint, NSTimer
 
 from config.logging_config import setup_logger
 from config.paths import PATHS
@@ -36,6 +41,29 @@ KEY_RETURN = 36
 KEY_ENTER = 76  # numeric keypad
 SAVED_FLASH_SECONDS = 1.6
 TICK_INTERVAL = 0.2
+_EVENT_APPLICATION_DEFINED = getattr(AppKit, "NSEventTypeApplicationDefined", 15)
+# If the run loop somehow refuses to unwind, leave anyway rather than becoming a
+# process that ignores SIGTERM and holds the global hotkey hostage.
+HARD_EXIT_GRACE = 2.0
+
+
+def _acquire_single_instance_lock():
+    """Hold a lock for the lifetime of the process, or return None.
+
+    Two instances both register the hotkey and only one of them gets the
+    keypress, which looks exactly like the app being broken. Cheaper to refuse
+    to start.
+    """
+    path = Path(tempfile.gettempdir()) / f"noteflow-quickcapture-{os.getuid()}.lock"
+    handle = path.open("w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
 
 
 class QuickCapture:
@@ -61,6 +89,8 @@ class QuickCapture:
         self._flash_timer = None
         self._key_monitor = None
         self._should_quit = False
+        self._quitting = False
+        self._shutdown_done = False
 
     # ------------------------------------------------------------------ context
     # (the CaptureContext an action receives)
@@ -269,12 +299,35 @@ class QuickCapture:
         self._should_quit = True
 
     def _quit(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
         logger.info("quick capture shutting down")
-        NSApp.stop_(None)
-        # stop_ only takes effect once another event is handled.
         self.panel.hide()
 
+        NSApp.stop_(None)
+        # stop_ is only noticed when the run loop next handles an *event*, and a
+        # firing NSTimer is not one — without this the app hangs here, ignoring
+        # SIGTERM because the handler below routes through this method.
+        NSApp.postEvent_atStart_(
+            NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+                _EVENT_APPLICATION_DEFINED, NSPoint(0, 0), 0, 0, 0, None, 0, 0, 0
+            ),
+            True,
+        )
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            HARD_EXIT_GRACE, False, lambda timer: self._hard_exit()
+        )
+
+    def _hard_exit(self) -> None:
+        logger.warning("run loop did not unwind; exiting the hard way")
+        self._shutdown()
+        os._exit(0)
+
     def _shutdown(self) -> None:
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
         self._stop_tick()
         if self._key_monitor is not None:
             NSEvent.removeMonitor_(self._key_monitor)
@@ -303,6 +356,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--show-on-start", action="store_true",
                         help="show the panel immediately, without the hotkey")
     args = parser.parse_args(argv)
+
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        print("error: quick capture is already running (only one instance can own "
+              "the hotkey)")
+        return 1
 
     return QuickCapture(
         args.incoming,
