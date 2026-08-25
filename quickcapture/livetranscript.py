@@ -17,7 +17,9 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
+from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from assemblyai.streaming.v3 import (
@@ -45,6 +47,13 @@ DEFAULT_MIC = ":default"
 # degrade, it fails outright — while multilingual gets the sentence. On
 # French-accented English the two are equivalent, so there is nothing to trade off.
 SPEECH_MODEL = "universal-streaming-multilingual"
+
+# A built-in laptop mic at speaking distance is quiet — measured peaks around
+# 190 of 32767 in a normal room. Left alone, the model breaks quiet speech into
+# fragments ("Okay. I need. To. Handle the situation.") where the same words at a
+# healthy level come through whole. dynaudnorm adapts instead of applying fixed
+# gain, so loud speech is not clipped.
+AUDIO_FILTER = "dynaudnorm=f=150:g=15:p=0.9"
 
 
 class LiveTranscriptError(RuntimeError):
@@ -88,6 +97,7 @@ class LiveTranscriber:
         mic: Optional[str] = None,
         ffmpeg: Optional[str] = None,
         keyterms: Optional[Sequence[str]] = None,
+        work_dir: Optional[Path] = None,
         on_update: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -103,11 +113,17 @@ class LiveTranscriber:
         self._on_update = on_update
         self._on_error = on_error
 
+        self.work_dir = Path(work_dir) if work_dir else (
+            Path(tempfile.gettempdir()) / f"noteflow-capture-{os.getuid()}"
+        )
+
         self.buffer = TranscriptBuffer()
         self._client: Optional[StreamingClient] = None
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._stopping = threading.Event()
+        self._log_path: Optional[Path] = None
+        self._bytes = 0
 
     @property
     def is_running(self) -> bool:
@@ -129,13 +145,20 @@ class LiveTranscriber:
         cmd = [
             self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
             "-f", "avfoundation", "-i", mic_spec,
+            "-af", AUDIO_FILTER,
             "-ar", str(SAMPLE_RATE), "-ac", "1", "-f", "s16le", "-",
         ]
         logger.info("starting live transcription")
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._log_path = self.work_dir / "dictation-ffmpeg.log"
+        self._bytes = 0
         try:
+            # stderr goes to a file, not a pipe: nobody reads a pipe here, and a
+            # full pipe buffer would wedge ffmpeg. The file is also what tells us
+            # why a capture died.
             self._proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=self._log_path.open("w"),
             )
         except OSError as exc:
             raise LiveTranscriptError(f"could not start ffmpeg: {exc}") from exc
@@ -191,6 +214,7 @@ class LiveTranscriber:
             chunk = proc.stdout.read(CHUNK_BYTES)
             if not chunk:
                 return
+            self._bytes += len(chunk)
             yield chunk
 
     def _on_turn(self, client, event: TurnEvent) -> None:
@@ -211,11 +235,39 @@ class LiveTranscriber:
         if self._on_error is not None:
             self._on_error(message)
 
-    def ffmpeg_error(self) -> str:
-        """Whatever ffmpeg complained about, for diagnosing a dead capture."""
-        if self._proc is None or self._proc.stderr is None:
+    @property
+    def bytes_streamed(self) -> int:
+        return self._bytes
+
+    def failure(self) -> Optional[str]:
+        """Report a dead capture, or None while it is healthy.
+
+        Without this the app could not tell "listening" from "the microphone
+        never opened": a dead ffmpeg makes the chunk generator end immediately,
+        the stream close quietly, and the panel sit on an empty transcript with
+        nothing logged. Poll it while dictating.
+        """
+        proc = self._proc
+        if proc is None or self._stopping.is_set():
+            return None
+        code = proc.poll()
+        if code is None:
+            return None                      # still capturing
+        if code == 0 and self._bytes:
+            return None                      # input ended by itself (a file, in tests)
+
+        detail = self._log_tail()
+        if "Failed to create AV capture input device" in detail or "denied" in detail.lower():
+            return "Microphone unavailable — check Privacy & Security settings"
+        if not self._bytes:
+            return detail or "the microphone delivered no audio"
+        return detail or "the microphone capture stopped unexpectedly"
+
+    def _log_tail(self, lines: int = 3) -> str:
+        if self._log_path is None or not self._log_path.exists():
             return ""
         try:
-            return (self._proc.stderr.read() or b"").decode(errors="replace").strip()
-        except (OSError, ValueError):
+            tail = self._log_path.read_text(errors="replace").strip().splitlines()[-lines:]
+        except OSError:
             return ""
+        return " / ".join(line.strip() for line in tail if line.strip())

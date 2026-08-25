@@ -30,7 +30,7 @@ from config.paths import PATHS
 
 from .actions import Action, actions
 from .hotkey import HotKey, HotKeyError, format_combo
-from .livetranscript import LiveTranscriber, LiveTranscriptError
+from .livetranscript import SAMPLE_RATE, LiveTranscriber, LiveTranscriptError
 from .panel import CapturePanel
 from .recorder import Recorder, RecorderError
 
@@ -143,6 +143,7 @@ class QuickCapture:
             editable=False,
             hint="text appears as you speak; you can edit it after stopping",
         )
+        self._start_tick()
 
     def dismiss(self) -> None:
         """Hide the panel and hand focus back to the app the user was in."""
@@ -217,10 +218,17 @@ class QuickCapture:
     def _stop_live_transcript(self) -> None:
         if self.live is None:
             return
+        self._stop_tick()
+        streamed = self.live.bytes_streamed
         text = self.live.stop()
         self.live = None
         if not text.strip():
-            self.show_error("Nothing was transcribed — was anything said?")
+            # Distinguish "heard nothing" from "captured nothing" — they need
+            # completely different fixes, and guessing wastes the user's time.
+            if streamed < SAMPLE_RATE:  # under half a second of audio
+                self.show_error("No audio reached the microphone stream")
+            else:
+                self.show_error("Audio was captured but nothing was recognised")
             return
 
         # Copy straight away so the common case (speak, paste) needs no extra
@@ -249,6 +257,7 @@ class QuickCapture:
         self.dismiss()
 
     def _live_failed(self, message: str) -> None:
+        self._stop_tick()
         if self.live is not None:
             self.live.stop()
             self.live = None
@@ -266,7 +275,14 @@ class QuickCapture:
             self._tick_timer = None
 
     def _tick(self) -> None:
-        """While recording: update the clock and notice if ffmpeg died."""
+        """Watch whatever is capturing, and surface a dead microphone promptly."""
+        if self.live is not None:
+            failure = self.live.failure()
+            if failure:
+                logger.error("live transcription capture failed: %s", failure)
+                self._live_failed(failure)
+            return
+
         if not self.recorder.is_recording:
             self._stop_tick()
             return
