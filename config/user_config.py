@@ -46,6 +46,22 @@ TODOIST_RESERVED_LABELS = [
 # case-insensitively.
 TODOIST_IGNORED_PROJECTS = ["Getting Started 👋"]
 
+# Quick capture dictation
+# Words the streaming model is told to expect. Proper nouns are where it goes wrong
+# most — "Pause IA" came back as "Posia" until these were passed — so this is the
+# place to add names, jargon and product names that get mangled. Keep the list
+# short and specific: it is a hint per session, not a dictionary, and a long list
+# of rarely-spoken words dilutes it. The vault's People folder is deliberately not
+# used as the source; 732 names would be well past useful.
+DICTATION_KEYTERMS = [
+    USER_NAME,
+    USER_ORGANIZATION,
+    "NoteFlow",
+    "Todoist",
+    "Obsidian",
+    "Copil",
+]
+
 # Any other user-specific information can be added here 
 
 

@@ -18,7 +18,7 @@ import os
 import shutil
 import subprocess
 import threading
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
 from assemblyai.streaming.v3 import (
     StreamingClient, StreamingClientOptions, StreamingError, StreamingEvents,
@@ -27,6 +27,7 @@ from assemblyai.streaming.v3 import (
 
 from config.logging_config import setup_logger
 from config.secrets import ASSEMBLY_AI_KEY
+from config.user_config import DICTATION_KEYTERMS
 
 logger = setup_logger(__name__)
 
@@ -38,6 +39,12 @@ SAMPLE_RATE = 16000
 CHUNK_MS = 50
 CHUNK_BYTES = int(SAMPLE_RATE * 2 * CHUNK_MS / 1000)
 DEFAULT_MIC = ":default"
+
+# The multilingual model, not the default English one. Measured on 40s of the same
+# recordings: on French the English model returns an empty transcript — it does not
+# degrade, it fails outright — while multilingual gets the sentence. On
+# French-accented English the two are equivalent, so there is nothing to trade off.
+SPEECH_MODEL = "universal-streaming-multilingual"
 
 
 class LiveTranscriptError(RuntimeError):
@@ -80,10 +87,12 @@ class LiveTranscriber:
         api_key: Optional[str] = None,
         mic: Optional[str] = None,
         ffmpeg: Optional[str] = None,
+        keyterms: Optional[Sequence[str]] = None,
         on_update: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
         self.api_key = api_key or ASSEMBLY_AI_KEY
+        self.keyterms = list(keyterms if keyterms is not None else DICTATION_KEYTERMS)
         self.mic = mic or os.environ.get("NOTEFLOW_CAPTURE_MIC") or DEFAULT_MIC
         self.ffmpeg = (
             ffmpeg
@@ -160,7 +169,10 @@ class LiveTranscriber:
             client.on(StreamingEvents.Turn, self._on_turn)
             client.on(StreamingEvents.Error, self._on_stream_error)
             client.connect(StreamingParameters(
-                sample_rate=SAMPLE_RATE, format_turns=True,
+                sample_rate=SAMPLE_RATE,
+                format_turns=True,
+                speech_model=SPEECH_MODEL,
+                keyterms_prompt=list(self.keyterms) or None,
             ))
             try:
                 client.stream(self._chunks())
