@@ -4,6 +4,109 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-25: Quick Capture — a Hotkey Panel as a Pipeline Entry Point
+
+### Problem
+Dictating a todo meant recording it in some other app, finding the file, renaming it and
+moving it into `Audio/Incoming`. Enough friction that the todo memo path went largely
+unused despite the whole downstream pipeline already working.
+
+### Investigation
+The entry point turned out to already exist. Two properties of the pipeline make a capture
+tool almost trivial:
+
+1. `#tags` in a filename are extracted into `source_tags`
+   (`processors/audio/transcriber.py`) and the classifier forces the category from them
+   (`processors/notes/transcript_classifier.py`), so a memo can skip AI classification.
+2. The scheduler polls every 30s, so pickup latency is irrelevant next to the AssemblyAI
+   round trip.
+
+So nothing in the pipeline needed changing — only something to put a correctly named file
+in the folder. Two approaches were tried and abandoned first:
+
+- **A shell script bound to a hotkey.** Worked from a terminal, but macOS Shortcuts (the
+  only hotkey mechanism available without installing anything) runs "Run Shell Script" in a
+  sandbox with no microphone access, and with `$USER` unset.
+- **Shortcuts' own Record Audio action.** Viable — the action exists on macOS and outputs
+  M4A — but the panel is a popup you must click Stop in, and Shortcuts cannot be authored
+  programmatically, so the whole setup would have been manual and unversioned.
+
+### Solution
+`quickcapture/`, a separate process in this repo. A global hotkey (⌃⌥Space) shows a panel
+listing capture actions; each runs from its shown key or a click. Recording writes an M4A
+into `Audio/Incoming` named so the tag forces the category.
+
+Verified end to end: hotkey → speech → transcript with `category: todo` (forced, not
+guessed) → Todoist, in about two minutes, and the Todoist stage correctly recognised the
+task as a restatement of an existing one rather than duplicating it.
+
+### Key Design Decisions
+- **Carbon `RegisterEventHotKey`, not `NSEvent` global monitors.** NSEvent monitors — and
+  everything built on them, `pynput` included — need Accessibility permission, which never
+  prompts usably for a launchd-started process. `RegisterEventHotKey` needs no permission
+  at all; it is what the OS uses for its own shortcuts. Called through `ctypes`.
+- **Its own process, not part of `main.py`.** A Cocoa run loop wants the main thread and
+  the service is asyncio. Coupling is one file written into `Audio/Incoming`, so a UI fault
+  cannot take processing down.
+- **Actions auto-discovered from `quickcapture/actions/`.** Adding a capability is one
+  file; the panel derives its rows, key hints and click handlers from the registry.
+- **ffmpeg records from `:default`**, which follows the system input device, so headsets
+  work with no configuration. Naming a device would have been actively wrong here: device
+  index 0 on this machine is BlackHole, a loopback that records silence.
+- **Memos land as a dotfile and are then renamed.** The transcriber skips dotfiles, so it
+  cannot pick up a half-copied file — and this is a cross-filesystem copy into Google
+  Drive, so the write is not atomic.
+- **Several ways out of every panel state**, after a prototype left an unclosable
+  borderless window on screen (see below): the hotkey toggles, Escape cancels, rows are
+  clickable, and losing focus dismisses the menu.
+- **A flock single-instance guard.** Two instances both register the hotkey and only one
+  receives the keypress, which is indistinguishable from the app being broken.
+
+### Key Learnings
+- **`NSApp.stop_()` does nothing until the run loop handles an *event*, and a firing
+  `NSTimer` is not one.** The app hung instead of quitting — and because the SIGTERM
+  handler routed through the same path, the process also survived `pkill`, holding the
+  global hotkey. Fixed by posting an application-defined event after `stop_()`, plus a
+  hard-exit fallback so no future wedge can produce an unkillable process.
+- **`pgrep -f "python -m quickcapture"` matches nothing**: the process is
+  `.../Python.app/Contents/MacOS/Python`, capital P. This produced a false all-clear that
+  hid three lingering instances and delayed finding the bug above. Case-sensitive process
+  checks are a trap when the interpreter is a framework build.
+- **A borderless `NSPanel` cannot become key window** unless `canBecomeKeyWindow` is
+  overridden, and `addLocalMonitorForEventsMatchingMask` only delivers while the app is
+  active — which together are exactly how a panel ends up on screen ignoring Escape.
+- **The hyphen after the date in a filename is load-bearing.** `2026-08-25 16-52-01 #todo`
+  silently loses its tag and gets AI-classified; `2026-08-25-Todo 16-52-01 #todo` does not.
+  `tests/test_quickcapture.py` mirrors the transcriber's parsing so a change here fails
+  loudly.
+- **TCC and the window server both work for a launchd agent.** Tested before committing to
+  the setup: a launchd-spawned process captured room audio at −70.5 dB (against −91 dB for
+  digital silence, the tell for a silently denied microphone) and drew its panel.
+
+### Files Created
+- `quickcapture/hotkey.py` - Carbon hotkey wrapper, combo parsing and display formatting
+- `quickcapture/recorder.py` - ffmpeg capture, the filename contract, delivery to Incoming
+- `quickcapture/panel.py` - the popup and its menu/recording/message states
+- `quickcapture/app.py` - hotkey, panel and recorder wiring; lifecycle
+- `quickcapture/actions/{record_todo,record_idea}.py` - the two shipped actions
+- `com.maximefournes.noteflow.quickcapture.plist` - launchd agent
+- `tests/test_quickcapture.py` - 27 tests
+
+### Files Modified
+- `requirements.txt` - `pyobjc-framework-Cocoa`, macOS only
+- `README.md`
+
+### Files Deleted
+- `scripts/record_memo.sh` - the abandoned shell-script approach
+
+### Verification
+- 224 tests pass (27 new).
+- Idle cost measured over a 60s window: ~10ms CPU per minute, ~28-37MB resident, flat.
+- Lifecycle: clean exit, SIGTERM honoured, `KeepAlive` restart confirmed by `kill -9`,
+  duplicate instance refused.
+
+---
+
 ## 2026-08-01: Extracting Commitments from Idea Notes
 
 ### Problem

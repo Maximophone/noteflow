@@ -49,7 +49,9 @@ A document processing pipeline for audio transcription and note management.
 
 ### Prerequisites
 - Python 3.10+ (3.11+ recommended)
-- FFmpeg (for video/audio processing)
+- FFmpeg (for video/audio processing, and for recording in Quick Capture)
+- macOS, for Quick Capture only — it uses Cocoa and Carbon via PyObjC. The
+  processing pipeline itself is platform-independent.
 
 ### Setup
 
@@ -93,6 +95,16 @@ OPENAI_API_KEY=your_openai_key
 CODA_API_KEY=your_coda_key
 NOTION_API_KEY=your_notion_key
 TODOIST_API_TOKEN=your_todoist_token
+```
+
+### Optional Environment Variables
+
+```
+NOTEFLOW_PATH=...              # audio folders (default: Google Drive/KnowledgeBot)
+OBSIDIAN_VAULT_PATH=...        # vault location
+NOTEFLOW_LOG_TO_FILE=0         # log to stdout only, for tests and one-off scripts
+NOTEFLOW_CAPTURE_MIC=":default"  # quick capture input; ":default" follows the system device
+NOTEFLOW_FFMPEG=...            # ffmpeg path, if not on PATH
 ```
 
 ### Todoist Sync
@@ -307,6 +319,10 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 
 ### Processing Pipeline
 
+0. **Capture** (optional): the file lands in `Audio/Incoming` — dropped there by
+   hand, or recorded by [Quick Capture](#quick-capture-macos). The name carries
+   the intent: `#tag` in the filename forces the category in step 3, skipping
+   AI classification
 1. **Video → Audio**: VideoToAudioProcessor extracts audio from video files
 2. **Audio → Transcript**: AudioTranscriber creates markdown transcripts
 3. **Classification**: TranscriptClassifier categorizes the transcript
