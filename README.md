@@ -163,7 +163,8 @@ python main.py --log-level DEBUG
 ### Quick Capture (macOS)
 
 A separate little app that turns a keypress into a voice memo the pipeline
-already knows how to handle. Start it in its own terminal:
+already knows how to handle. It normally runs as a launchd agent (see below);
+to run it in a terminal instead:
 
 ```bash
 python -m quickcapture
@@ -186,6 +187,36 @@ It talks to the pipeline only by writing a file into `Audio/Incoming`.
 Adding another capture action is one file in `quickcapture/actions/` — subclass
 `Action`, decorate it with `@register`, and the panel picks up the row, the key
 hint and the click handler by itself.
+
+#### Running it continuously
+
+A launchd agent keeps it alive across logins and restarts it if it ever dies:
+
+```bash
+cp com.maximefournes.noteflow.quickcapture.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.maximefournes.noteflow.quickcapture.plist
+```
+
+Stop any manually started copy first — only one instance can own the hotkey, and
+a second one exits immediately rather than fighting over it.
+
+```bash
+# Is it running?
+launchctl print gui/$(id -u)/com.maximefournes.noteflow.quickcapture | grep -E "state|pid"
+
+# Restart after changing the code
+launchctl kickstart -k gui/$(id -u)/com.maximefournes.noteflow.quickcapture
+
+# Its own log (separate from noteflow.log)
+tail -f logs/quickcapture.log
+
+# Turn it off
+launchctl bootout gui/$(id -u)/com.maximefournes.noteflow.quickcapture
+```
+
+Idle cost is negligible: roughly 10ms of CPU per minute and ~37MB resident,
+waking once a second to check for signals. It only does real work — an ffmpeg
+process, one file write — while you are actually recording.
 
 #### Microphone permission
 
