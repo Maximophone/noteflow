@@ -4,6 +4,74 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-26: A Memo That Retried For Three And A Half Hours
+
+### Problem
+A todo recorded at 11:04 never arrived. The audio was delivered to Incoming correctly and
+sat there, re-queued every few minutes until 14:41, logging only:
+
+    Error processing 2026-08-26-Todo 11-04-03 #todo.m4a: 'NoneType' object is not iterable
+
+### Investigation
+The recording was fine — 22.85s, max -19.6 dB, marginally *louder* than a memo that had
+transcribed successfully the day before. So the audio was not the suspect it looked like.
+
+Running the file through the pipeline's own AssemblyAI config gave the real answer:
+
+    status: error
+    error:  language_detection cannot be performed on files with no spoken audio.
+
+AssemblyAI reports a failed job as a *completed call* carrying an error status, with
+`utterances` left as None. `transcript.utterances` was iterated without checking either,
+so the TypeError fired before the actual reason could be read.
+
+Forcing a language extracted only "à l'intérieur." / "To finish." from 23 seconds, and
+band analysis showed energy spread flat (-43.9 dB below 200 Hz against -44.3 dB across the
+speech band) rather than concentrated where speech lives. The recording caught room noise,
+not the user. He had recorded a meeting minutes earlier, so the microphone was most likely
+still tied up by the call.
+
+### Solution
+Check the transcript before using it, and separate a failure retrying cannot fix from a
+transient one. Permanent failures park the file in `Audio/Failed` and record the API's own
+message in the error registry, so it surfaces in the NoteFlow Inbox. Transient failures
+keep the existing backoff and retry.
+
+### Key Design Decisions
+- **Two failure classes, not one.** A network blip should retry; "no spoken audio" never
+  will. Treating them identically is what turned one bad memo into 40 identical log lines.
+- **Park the file rather than delete or leave it.** Leaving it re-queues forever; deleting
+  destroys audio the user may want. `Audio/Failed` sits beside Incoming and Processed, so
+  a fixed file can just be dragged back.
+- **Report through the error registry**, which already feeds the inbox. Audio-stage
+  failures were invisible there because the registry is keyed by note and no note exists
+  yet at that point — the path works fine, it had simply never been used this early.
+
+### Key Learnings
+- **A quiet recording and a speechless one are not distinguishable by level.** The dud
+  averaged -39.6 dB and the memo that worked -41.0 dB. A spectral check was worse than
+  useless: the dud showed *more* speech-band energy than the good one (+0.8 dB against
+  -2.4 dB relative to its own low band). A local "was anything said?" guard was dropped
+  for want of a metric that separates the two.
+- **An error status can arrive on a successful call.** Anything reading `.utterances`,
+  `.text` or `.words` should check `status` first.
+- **Invisible retries are worse than a loud failure.** The pipeline behaved exactly as
+  designed and the user simply never found out; three and a half hours of retries produced
+  no signal anyone would see.
+
+### Files Modified
+- `processors/audio/transcriber.py` - `PermanentTranscriptionError`, status and utterance
+  checks, `Audio/Failed`, error registry reporting
+
+### Verification
+- Against the file that was stuck: reason logged, file parked, error in the inbox, and a
+  second pass does not re-queue it.
+- A healthy memo transcribes unchanged, with tags and title intact.
+- Confirmed in production after restarting the service: Incoming cleared, the file moved
+  to `Audio/Failed`, and the inbox now names it with AssemblyAI's own message.
+
+---
+
 ## 2026-08-25: Live Dictation to the Clipboard
 
 ### Problem
