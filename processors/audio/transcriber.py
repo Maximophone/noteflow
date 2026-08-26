@@ -18,11 +18,25 @@ from config.logging_config import setup_logger
 from config.services_config import BIG_MODEL
 
 from prompts.prompts import get_prompt
+from ..common import error_registry
 
 logger = setup_logger(__name__)
 
+class PermanentTranscriptionError(Exception):
+    """A failure that retrying cannot fix — no speech, or an unsupported language.
+
+    Separated from transient failures (network, timeouts) because those should
+    keep retrying, while these must stop and be shown to the user instead of
+    failing invisibly forever.
+    """
+
+
 class AudioTranscriber:
     """Handles the transcription of audio files to markdown and JSON."""
+
+    # The pipeline stage this class performs, so a failure appears in the inbox
+    # under the same label the note frontmatter would carry.
+    stage_name = "transcribed"
     
     def __init__(
         self, 
@@ -34,6 +48,9 @@ class AudioTranscriber:
         self.input_dir = input_dir
         self.output_dir = output_dir
         self.processed_dir = processed_dir
+        # Where files that can never be transcribed are parked, alongside the
+        # Incoming and Processed folders so they are easy to find and re-drop.
+        self.failed_dir = input_dir.parent / "Failed"
         self.files_in_process: Set[str] = set()
         # filename -> time of last failure, used to back off before retrying
         self.failed_recently: Dict[str, datetime] = {}
@@ -129,7 +146,18 @@ class AudioTranscriber:
             
             # Transcribe
             transcript = await self.transcribe_audio_file(file_path)
-            
+
+            # AssemblyAI reports a failed job as a completed call with an error
+            # status, and utterances left as None. Iterating that raised
+            # "'NoneType' object is not iterable" every cycle for hours, with the
+            # real reason ("no spoken audio") never reaching the log or the user.
+            if transcript.status == assemblyai.TranscriptStatus.error:
+                raise PermanentTranscriptionError(transcript.error or "transcription failed")
+            if transcript.utterances is None:
+                raise PermanentTranscriptionError(
+                    "no speech found in the audio (no utterances returned)"
+                )
+
             # Process speaker labels with LeMUR
             text_with_speaker_labels = "\n".join(
                 f"Speaker {utt.speaker}:\n{utt.text}\n" 
@@ -214,6 +242,19 @@ class AudioTranscriber:
             
             logger.info("Processed: %s -> %s", filename, md_filename)
             
+        except PermanentTranscriptionError as e:
+            # Retrying cannot help, so stop: move the file aside and surface it in
+            # the inbox. Left in place it would re-queue every cycle indefinitely.
+            logger.error("Cannot transcribe %s: %s", filename, e)
+            self.failed_dir.mkdir(parents=True, exist_ok=True)
+            parked = self.failed_dir / filename
+            try:
+                file_path.rename(parked)
+            except OSError as move_error:
+                logger.error("Could not move %s aside: %s", filename, move_error)
+                parked = file_path
+                self.failed_recently[filename] = datetime.now()
+            error_registry.record_error(parked, self.stage_name, str(e))
         except Exception as e:
             logger.error("Error processing %s: %s", filename, str(e))
             # Record the failure to prevent immediate re-queueing
