@@ -52,6 +52,12 @@ HEADER_H = 30.0
 ROW_H = 38.0
 FOOTER_H = 26.0
 LABEL_X = 74.0        # where row labels start, leaving room for the key cap
+METER_H = 8.0         # level meter bar
+METER_GAP = 16.0
+# The meter spans roughly -60 dBFS (silence) to -6 dBFS (loud), the useful range
+# for a voice: quiet speech still moves it visibly instead of hugging zero.
+METER_FLOOR_DBFS = -60.0
+METER_CEIL_DBFS = -6.0
 CORNER_RADIUS = 16.0
 
 # Row: (key hint, label, callback or None)
@@ -171,6 +177,8 @@ class CapturePanel:
         self._on_resign_key = on_resign_key
         self._time_field: Optional[NSTextField] = None
         self._text_view: Optional[NSTextView] = None
+        self._meter_fill: Optional[NSView] = None
+        self._meter_width: float = 0.0
         self._width: float = PANEL_WIDTH
         self.state: str = "hidden"
 
@@ -262,7 +270,8 @@ class CapturePanel:
         self._present()
 
     def show_recording(self, title: str, rows: Sequence[Row]) -> None:
-        height = PAD_TOP + HEADER_H + 14 + ROW_H * len(rows) + PAD_BOTTOM
+        height = (PAD_TOP + HEADER_H + METER_GAP + METER_H + 14
+                  + ROW_H * len(rows) + PAD_BOTTOM)
         panel = self._ensure_panel(height)
         content = panel.contentView()
 
@@ -283,9 +292,40 @@ class CapturePanel:
         self._time_field.setAlignment_(_ALIGN_RIGHT)
         content.addSubview_(self._time_field)
 
+        # Level meter: the only way to tell a live microphone from a dead one
+        # while there is still time to do something about it.
+        y -= METER_GAP
+        track_width = PANEL_WIDTH - 2 * PAD_X
+        track = NSView.alloc().initWithFrame_(
+            NSMakeRect(PAD_X, y, track_width, METER_H)
+        )
+        track.setWantsLayer_(True)
+        track.layer().setCornerRadius_(METER_H / 2)
+        track.layer().setBackgroundColor_(
+            NSColor.labelColor().colorWithAlphaComponent_(0.15).CGColor()
+        )
+        fill = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 0, METER_H))
+        fill.setWantsLayer_(True)
+        fill.layer().setCornerRadius_(METER_H / 2)
+        fill.layer().setBackgroundColor_(NSColor.systemGreenColor().CGColor())
+        track.addSubview_(fill)
+        content.addSubview_(track)
+        self._meter_fill = fill
+        self._meter_width = track_width
+
         self._add_rows(content, rows, y - 14)
         self.state = "recording"
         self._present()
+
+    def update_level(self, dbfs: float) -> None:
+        """Move the meter. Silence leaves it empty rather than at a floor value."""
+        if self._meter_fill is None or self.state != "recording":
+            return
+        span = METER_CEIL_DBFS - METER_FLOOR_DBFS
+        fraction = max(0.0, min(1.0, (dbfs - METER_FLOOR_DBFS) / span))
+        self._meter_fill.setFrame_(
+            NSMakeRect(0, 0, self._meter_width * fraction, METER_H)
+        )
 
     def update_elapsed(self, seconds: float) -> None:
         if self._time_field is None:
@@ -414,6 +454,7 @@ class CapturePanel:
         self.state = "hidden"
         self._time_field = None
         self._text_view = None
+        self._meter_fill = None
 
     @property
     def is_visible(self) -> bool:

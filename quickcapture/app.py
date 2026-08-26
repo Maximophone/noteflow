@@ -293,6 +293,7 @@ class QuickCapture:
             self.show_error(failure)
             return
         self.panel.update_elapsed(self.recorder.elapsed)
+        self.panel.update_level(self.recorder.level_dbfs)
 
     # ------------------------------------------------------------------ input
 

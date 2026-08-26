@@ -22,11 +22,14 @@ headsets work with no configuration.
 
 from __future__ import annotations
 
+import array
+import math
 import os
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +42,13 @@ logger = setup_logger(__name__)
 # avfoundation input spec is "[video]:[audio]" — no video, system default audio.
 DEFAULT_MIC = ":default"
 FINALIZE_TIMEOUT = 10.0  # seconds to let ffmpeg close the container cleanly
+
+# ffmpeg writes the memo *and* a second raw-PCM stream that feeds the level
+# meter, so the panel can show whether the microphone is hearing anything while
+# there is still time to do something about it.
+METER_RATE = 16000
+METER_CHUNK = int(METER_RATE * 2 * 0.05)   # 50ms
+SILENCE_FLOOR_DBFS = -99.0
 
 
 class RecorderError(RuntimeError):
@@ -86,6 +96,9 @@ class Recorder:
         self._log_path: Optional[Path] = None
         self._started_at: Optional[datetime] = None
         self._started_monotonic: float = 0.0
+        self._level_dbfs = SILENCE_FLOOR_DBFS
+        self._peak_dbfs = SILENCE_FLOOR_DBFS
+        self._meter_thread: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------------ state
 
@@ -130,21 +143,32 @@ class Recorder:
         self._log_path = self.work_dir / "ffmpeg.log"
         self._temp_path.unlink(missing_ok=True)
 
+        self._level_dbfs = SILENCE_FLOOR_DBFS
+        self._peak_dbfs = SILENCE_FLOOR_DBFS
+
         cmd = [
             self.ffmpeg, "-hide_banner", "-nostdin",
             "-f", "avfoundation", "-i", _mic_spec(self.mic),
-            "-ac", "1", "-c:a", "aac", "-b:a", "96k",
+            # The memo itself.
+            "-map", "0:a", "-ac", "1", "-c:a", "aac", "-b:a", "96k",
             "-y", str(self._temp_path),
+            # A parallel raw stream, read purely to measure the level.
+            "-map", "0:a", "-ac", "1", "-ar", str(METER_RATE), "-f", "s16le", "-",
         ]
         logger.info("starting recording (%s): %s", self._tag, " ".join(cmd))
         try:
-            log_file = self._log_path.open("w")
             self._proc = subprocess.Popen(
-                cmd, stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
+                cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=self._log_path.open("w"),
             )
         except OSError as exc:
             self._reset()
             raise RecorderError(f"could not start ffmpeg ({self.ffmpeg}): {exc}") from exc
+
+        self._meter_thread = threading.Thread(
+            target=self._run_meter, args=(self._proc,), daemon=True, name="capture-meter",
+        )
+        self._meter_thread.start()
 
     def stop(self) -> Path:
         """Finish the recording and move it into Incoming. Returns the path.
@@ -191,6 +215,48 @@ class Recorder:
         logger.info("recording discarded")
         self._reset()
 
+    # ------------------------------------------------------------------ metering
+
+    @property
+    def level_dbfs(self) -> float:
+        """Loudness of the last 50ms window, in dBFS (-99 when silent)."""
+        return self._level_dbfs
+
+    @property
+    def peak_dbfs(self) -> float:
+        """Loudest window seen in this recording so far."""
+        return self._peak_dbfs
+
+    def _run_meter(self, proc: subprocess.Popen) -> None:
+        """Drain the metering stream, measuring as it goes.
+
+        Draining is not optional: nothing else reads this pipe, and a full pipe
+        buffer would stall ffmpeg and with it the recording. So every path here
+        keeps reading, even if measuring a window fails.
+        """
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            while True:
+                chunk = stream.read(METER_CHUNK)
+                if not chunk:
+                    return
+                try:
+                    samples = array.array("h")
+                    samples.frombytes(chunk[:len(chunk) // 2 * 2])
+                    if not samples:
+                        continue
+                    rms = math.sqrt(sum(float(v) * v for v in samples) / len(samples))
+                    self._level_dbfs = (
+                        20 * math.log10(rms / 32768.0) if rms > 0 else SILENCE_FLOOR_DBFS
+                    )
+                    self._peak_dbfs = max(self._peak_dbfs, self._level_dbfs)
+                except (ValueError, OverflowError):
+                    continue
+        except (OSError, ValueError):
+            return
+
     # ------------------------------------------------------------------ helpers
 
     def _deliver(self, temp_path: Path, tag: str, when: datetime) -> Path:
@@ -227,6 +293,8 @@ class Recorder:
 
     def _reset(self) -> None:
         self._proc = None
+        self._level_dbfs = SILENCE_FLOOR_DBFS
+        self._meter_thread = None
         self._tag = None
         self._temp_path = None
         self._started_at = None
