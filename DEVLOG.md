@@ -4,6 +4,74 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-27: The Pipeline Was Saturated By Deciding It Had Nothing To Do
+
+### Problem
+Everything felt slow. The service was running normally, but pegged at ~92% of a core
+continuously, and a new memo took minutes to move.
+
+### Investigation
+`ps` reported 88% CPU, which is a lifetime average and easy to dismiss; a 30-second delta
+of cumulative CPU time confirmed it live at 92%. Almost all of it was *user* time (247 of
+260 minutes), so Python computation rather than waiting on Google Drive.
+
+`sample` was no help — every thread appeared parked in `__psynch_cvwait` — and py-spy
+needs root on macOS. Correlating 3-second CPU deltas against the log was more useful: the
+load was flat near 100% regardless of what any processor was logging, so nothing specific
+was to blame. Something continuous was.
+
+The arithmetic found it. Thirteen processors take `PATHS.transcriptions` as their input
+directory, and `NoteProcessor._should_process` decides eligibility by parsing a note's
+frontmatter. Measured on the real vault: **3.0ms per note, 1471 notes, thirteen
+processors, every 30 seconds** — about 60s of CPU demanded per 30s cycle. The service could
+never keep up, so it ran permanently behind, and real work queued behind scans that almost
+always concluded there was nothing to do.
+
+Nothing had broken. This is linear in vault size times processor count, and the vault had
+simply grown into it.
+
+### Solution
+Cache the parse in `processors/common/frontmatter.py`, keyed on the file's identity:
+`(path, mtime_ns, size)`. Notes rarely change between cycles, so one parse per
+modification replaces thirteen parses every thirty seconds.
+
+### Key Design Decisions
+- **Reads return a deep copy.** Callers routinely mutate what they get back — the
+  classifier assigns `category` and appends to `tags` and `processing_stages` — so handing
+  out the cached object would let one processor corrupt what every other one sees. Copying
+  a small dict costs microseconds against a 3ms parse.
+- **Failed parses are never cached.** An unreadable note must keep surfacing its error
+  every cycle, exactly as before.
+- **mtime_ns, not mtime.** Verified nanosecond resolution on the Google Drive mount, so a
+  same-size rewrite cannot masquerade as the cached version. `set_frontmatter_in_file`
+  invalidates explicitly anyway, rather than depending on that.
+- **A size cap that clears rather than grows**, so a pathological caller cannot turn this
+  into an unbounded leak.
+
+### Key Learnings
+- **`ps %CPU` is a lifetime average.** It reads like an instantaneous measurement and is
+  not one; a delta of cumulative CPU time over a fixed window is the honest number.
+- **Saturation can have no hot spot.** Both profiling attempts pointed nowhere, because the
+  cost was spread evenly across thirteen identical scans. Counting the work from the
+  scheduler's structure beat trying to catch it in a profiler.
+- **The expensive part of doing nothing.** Every processor paid full price to discover that
+  1471 finished notes were still finished.
+
+### Files Modified
+- `processors/common/frontmatter.py` - the cache, invalidation, and stats
+
+### Files Created
+- `tests/test_frontmatter_cache.py` - 10 tests, weighted to staleness and shared mutation
+
+### Verification
+- Simulated 13-processor cycle on the real vault: 60.0s before, 5.3s cold, **0.8s warm**.
+- In production after restart: **92% of a core to 6%**. Inbox generation went from 11.4s
+  per run to 0.0s warm.
+- 240 tests pass. A note edited between reads is still picked up, including when the edit
+  leaves the file exactly the same length.
+
+---
+
 ## 2026-08-26: A Memo That Retried For Three And A Half Hours
 
 ### Problem
