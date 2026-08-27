@@ -1,11 +1,81 @@
+import copy
+import os
 import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from config.logging_config import setup_logger
 from pathlib import Path
 
 logger = setup_logger(__name__)
 
+# Deciding whether a note needs work means parsing its frontmatter, and thirteen
+# processors share one directory of ~1500 transcripts. That put the same parse
+# through thirteen times per note every 30s — roughly 57s of CPU per 30s cycle,
+# which the service could never keep up with, so it ran permanently saturated
+# and real work queued behind the scanning.
+#
+# Notes almost never change between cycles, so the parse is cached against the
+# file's identity: same path, same mtime, same size means the same frontmatter.
+# mtime is nanosecond-resolution even on the Google Drive mount, so a rewrite
+# cannot masquerade as the cached version.
+_CACHE: Dict[Tuple[str, int, int], Any] = {}
+# Far above any real vault. A runaway clears the cache rather than growing until
+# the process is killed.
+_CACHE_LIMIT = 50_000
+_MISSING = object()
+_stats = {"hits": 0, "misses": 0}
+
+
+def invalidate_frontmatter_cache(file_path=None) -> None:
+    """Forget one file's cached frontmatter, or the whole cache.
+
+    Writers do not strictly need this — a rewrite changes mtime and so misses
+    naturally — but calling it keeps correctness independent of clock and
+    filesystem behaviour.
+    """
+    if file_path is None:
+        _CACHE.clear()
+        return
+    target = str(file_path)
+    for key in [k for k in _CACHE if k[0] == target]:
+        del _CACHE[key]
+
+
+def frontmatter_cache_stats() -> Dict[str, int]:
+    """Hits, misses and current size — used by tests and for measuring."""
+    return {**_stats, "entries": len(_CACHE)}
+
+
 def read_frontmatter_from_file(file_path):
+    """Read a note's frontmatter, reusing the last parse when it is unchanged.
+
+    Returns a copy: callers routinely mutate what they get back (adding a
+    category, appending to tags), and handing out the cached object would let
+    one processor corrupt what every other one sees.
+    """
+    try:
+        stat = os.stat(file_path)
+        key = (str(file_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        # Missing or unreadable: parse so the caller gets the error it expects.
+        return _parse_frontmatter_file(file_path)
+
+    cached = _CACHE.get(key, _MISSING)
+    if cached is not _MISSING:
+        _stats["hits"] += 1
+        return copy.deepcopy(cached)
+
+    # A parse that raises is deliberately not cached: those files are rare, and
+    # the error must keep surfacing on every cycle as it did before.
+    front_matter = _parse_frontmatter_file(file_path)
+    if len(_CACHE) >= _CACHE_LIMIT:
+        logger.warning("frontmatter cache hit %d entries; clearing", len(_CACHE))
+        _CACHE.clear()
+    _CACHE[key] = front_matter
+    _stats["misses"] += 1
+    return copy.deepcopy(front_matter)
+
+
+def _parse_frontmatter_file(file_path):
     front_matter = {}
     with open(file_path, 'r', encoding='utf-8') as f:
         # Check for the start of front matter
@@ -187,6 +257,7 @@ def set_frontmatter_in_file(file_path, new_front_matter):
     # Write the updated content back to the file
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(new_content)
+    invalidate_frontmatter_cache(file_path)
 
 def parse_frontmatter_from_content(content: str) -> Optional[Dict[str, Any]]:
     """
