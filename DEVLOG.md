@@ -4,6 +4,85 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-08-27: launchd Was Throttling The Microphone Capture
+
+### Problem
+Voice memos recorded through the quick-capture agent came back from AssemblyAI as "no
+spoken audio", repeatedly, over two days. Live dictation produced nothing either. The same
+code run from a shell worked perfectly.
+
+### Investigation
+Almost every measurement pointed the wrong way, and several plausible theories died:
+
+- The recordings looked *fine*. Level was normal (-40 dB mean, peaks to -0.5 dB), and they
+  showed more speech-like modulation than a memo that had transcribed cleanly.
+- The microphone was healthy: a tone played through the speakers was captured, and
+  synthesised speech played into the room recorded and transcribed back verbatim through
+  the very same `Recorder`.
+- Not BlackHole: `:default` and `:1` (the built-in mic) measure identically, and BlackHole
+  is digital silence.
+- Not input gain, not the mic being busy with a call, not the streaming model.
+
+The user's own observation — "it just isn't picking up any sound", and OBS records fine —
+was correct all along, and worth more than any of the theories above.
+
+What finally exposed it was comparing each file's **container duration against the audio
+actually inside it**:
+
+| recording | container | real audio | |
+|---|---|---|---|
+| three failures | 16-23s | 5-7s | **30-33%** |
+| one that worked | 13.0s | 11.4s | 88% |
+
+Packet timestamps confirmed the shape: 241 packets where ~770 were due, spaced 53-85ms
+apart instead of 21ms, evenly from the first second. Systematic under-delivery, not a burst
+of CPU starvation. Speech chopped to a third is unintelligible, which is exactly what
+AssemblyAI was reporting — and why the level meter looked reassuring, since the fragments
+that did arrive had normal peaks.
+
+Then it reproduced deterministically. The same 25-second recording:
+
+- from a shell: **88.3%** complete
+- from a launchd job: **20.9%** complete
+
+### Solution
+`ProcessType: Interactive` in the agent's plist. A launchd job without that key is
+scheduled as background work, and ffmpeg's avfoundation capture drops frames wholesale
+under that policy. With it, the same recording is 90% complete with no gap above 50ms, and
+speech played during a launchd-context recording transcribes correctly end to end.
+
+### Key Design Decisions
+- **The plist, not the code.** The capture command was never wrong; the scheduling policy
+  it inherited was. Fixing it anywhere else would have been a workaround.
+- **`-thread_queue_size 4096` was tested and dropped.** The standard remedy for capture
+  drops moved the ratio from 78.6% to 79.0% — nothing. An unproven change is not worth
+  carrying.
+
+### Key Learnings
+- **Container duration is not audio duration.** Everything cheap — level, spectrum,
+  modulation, a live meter — rated the broken recordings at or above a working one. The
+  ratio of decoded samples to container length separated them instantly, and is the first
+  thing to measure when audio "looks fine" but will not transcribe.
+- **A launchd agent is not a shell.** Anything latency-sensitive spawned from a LaunchAgent
+  inherits background scheduling unless `ProcessType` says otherwise. Testing capture code
+  from a terminal proves nothing about how it behaves as an agent.
+- **The user's description beat the instrumentation.** Three separate hypotheses of mine
+  were disproved by measurement; the report "it isn't picking up sound" was accurate from
+  the first message.
+
+### Files Modified
+- `com.maximefournes.noteflow.quickcapture.plist` - `ProcessType: Interactive`
+
+### Verification
+- 25s recording under launchd: 20.9% before, 90% after, no gap above 50ms.
+- End to end in the launchd context: speech played during the recording transcribed
+  correctly.
+- The three damaged recordings were unrecoverable — boosting by 25dB and reconstructing on
+  a 3x sample-rate theory both yielded nothing, because the missing frames are simply
+  absent.
+
+---
+
 ## 2026-08-27: The Pipeline Was Saturated By Deciding It Had Nothing To Do
 
 ### Problem
