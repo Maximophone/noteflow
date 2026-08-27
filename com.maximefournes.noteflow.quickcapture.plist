@@ -18,6 +18,16 @@
     <key>WorkingDirectory</key>
     <string>/Users/maximefournes/code/noteflow</string>
 
+    <!-- Interactive, not the default. A launchd job without this is scheduled as
+         background work, and ffmpeg's avfoundation capture then loses audio
+         frames wholesale: measured over a 25s recording, 21% of the audio
+         arrived without this key and 90% with it. Two todos were recorded as
+         unintelligible fragments before this was found — the recordings looked
+         plausible, and only the ratio of container duration to actual samples
+         gave it away. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
     <key>RunAtLoad</key>
     <true/>
 
