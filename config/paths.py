@@ -79,6 +79,9 @@ class Paths:
         # Audio processing paths
         self.audio_input = self.noteflow_path / "Audio" / "Incoming"
         self.audio_processed = self.noteflow_path / "Audio" / "Processed"
+        # Recordings that can never be transcribed (no speech, unsupported
+        # language). Parked here rather than retried forever; listed in the inbox.
+        self.audio_failed = self.noteflow_path / "Audio" / "Failed"
         self.transcriptions = self.vault_noteflow_path / "Transcriptions"
         
         # Note processing paths

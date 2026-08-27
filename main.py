@@ -170,7 +170,8 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
         scan_dirs=[PATHS.transcriptions, PATHS.email_digests],
         inbox_path=PATHS.inbox_path,
         vault_path=PATHS.vault_path,
-        discord_io=discord_io
+        discord_io=discord_io,
+        failed_audio_dir=PATHS.audio_failed
     )
     processors["_inbox_generator"] = inbox_generator
 

@@ -17,6 +17,7 @@ from config.user_config import TARGET_DISCORD_USER_ID
 from integrations.discord import DiscordIOCore
 from ..common.frontmatter import read_frontmatter_from_file
 from ..common import error_registry
+from ..common.failed_audio import list_failures
 
 logger = setup_logger(__name__)
 
@@ -44,7 +45,8 @@ class InboxGenerator:
     """
     
     def __init__(self, scan_dir: Path = None, inbox_path: Path = None, vault_path: Path = None, 
-                 scan_dirs: List[Path] = None, discord_io: DiscordIOCore = None):
+                 scan_dirs: List[Path] = None, discord_io: DiscordIOCore = None,
+                 failed_audio_dir: Path = None):
         """
         Initialize the inbox generator.
         
@@ -54,6 +56,8 @@ class InboxGenerator:
             vault_path: Obsidian vault root for computing relative paths
             scan_dirs: List of directories to scan for pending forms
             discord_io: Discord I/O core for sending notifications
+            failed_audio_dir: Audio/Failed, listed so recordings that can never
+                be transcribed stay visible instead of being silently dropped
         """
         # Support both single dir and list of dirs
         if scan_dirs:
@@ -66,6 +70,7 @@ class InboxGenerator:
         self.inbox_path = inbox_path
         self.vault_path = vault_path
         self.discord_io = discord_io
+        self.failed_audio_dir = failed_audio_dir
         
         # Track known pending items to detect new ones
         # Key is file path string, value is set of pending form types
@@ -336,6 +341,25 @@ class InboxGenerator:
             for item in error_items:
                 lines.append(
                     f"| [[{item['name']}]] | {item['stage']} | {self._table_cell(item['message'])} |"
+                )
+            lines.append("")
+
+        failed_audio = list_failures(self.failed_audio_dir)
+        if failed_audio:
+            lines.extend([
+                f"## Recordings That Could Not Be Transcribed "
+                f"({len(failed_audio)} {'file' if len(failed_audio) == 1 else 'files'})",
+                "",
+                "Moved out of `Audio/Incoming` and no longer retried. Drop one back "
+                "into Incoming to try again, or delete it to clear it from here.",
+                "",
+                "| Recording | Reason |",
+                "|-----------|--------|",
+            ])
+            for failure in failed_audio:
+                # Plain names, not wikilinks: the audio lives outside the vault.
+                lines.append(
+                    f"| `{failure['name']}` | {self._table_cell(failure['reason'])} |"
                 )
             lines.append("")
 

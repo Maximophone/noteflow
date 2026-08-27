@@ -19,6 +19,7 @@ from config.services_config import BIG_MODEL
 
 from prompts.prompts import get_prompt
 from ..common import error_registry
+from ..common.failed_audio import write_failure_reason
 
 logger = setup_logger(__name__)
 
@@ -50,6 +51,7 @@ class AudioTranscriber:
         self.processed_dir = processed_dir
         # Where files that can never be transcribed are parked, alongside the
         # Incoming and Processed folders so they are easy to find and re-drop.
+        # Derived from input_dir rather than PATHS so tests can point it anywhere.
         self.failed_dir = input_dir.parent / "Failed"
         self.files_in_process: Set[str] = set()
         # filename -> time of last failure, used to back off before retrying
@@ -243,8 +245,9 @@ class AudioTranscriber:
             logger.info("Processed: %s -> %s", filename, md_filename)
             
         except PermanentTranscriptionError as e:
-            # Retrying cannot help, so stop: move the file aside and surface it in
-            # the inbox. Left in place it would re-queue every cycle indefinitely.
+            # Retrying cannot help, so stop: move the file aside and leave the
+            # reason beside it. Left in place it would re-queue every cycle
+            # indefinitely.
             logger.error("Cannot transcribe %s: %s", filename, e)
             self.failed_dir.mkdir(parents=True, exist_ok=True)
             parked = self.failed_dir / filename
@@ -252,9 +255,15 @@ class AudioTranscriber:
                 file_path.rename(parked)
             except OSError as move_error:
                 logger.error("Could not move %s aside: %s", filename, move_error)
-                parked = file_path
                 self.failed_recently[filename] = datetime.now()
-            error_registry.record_error(parked, self.stage_name, str(e))
+                error_registry.record_error(file_path, self.stage_name, str(e))
+                return
+            # The reason goes on disk rather than only into the in-memory error
+            # registry: nothing re-records a parked file after a restart, so an
+            # in-memory entry would quietly vanish and the inbox would claim all
+            # is well. The folder plus this note are the durable record, and
+            # deleting the recording clears the report by itself.
+            write_failure_reason(parked, str(e))
         except Exception as e:
             logger.error("Error processing %s: %s", filename, str(e))
             # Record the failure to prevent immediate re-queueing
