@@ -364,10 +364,19 @@ class InboxGenerator:
             lines.append("")
 
         if not items:
-            lines.extend([
-                "✅ **All clear!** No notes are waiting for input.",
-                "",
-            ])
+            # "All clear" is only true if nothing above needs attention either.
+            # Claiming it under a list of failures is how an inbox stops being
+            # worth reading.
+            if error_items or failed_audio:
+                lines.extend([
+                    "No notes are waiting for your input, but see above.",
+                    "",
+                ])
+            else:
+                lines.extend([
+                    "✅ **All clear!** No notes are waiting for input.",
+                    "",
+                ])
         else:
             lines.extend([
                 f"## Awaiting Input ({len(items)} {'file' if len(items) == 1 else 'files'})",

@@ -108,3 +108,40 @@ class TestInboxRendering:
     def test_no_section_when_nothing_is_parked(self, tmp_path, failed_dir):
         text = self._inbox(tmp_path, failed_dir)
         assert "Could Not Be Transcribed" not in text
+
+
+class TestAllClearHonesty:
+    """"All clear" must not appear above unresolved problems."""
+
+    def _inbox(self, tmp_path, failed_dir):
+        scan = tmp_path / "Transcriptions"
+        scan.mkdir(exist_ok=True)
+        inbox_path = tmp_path / "Inbox.md"
+        gen = InboxGenerator(
+            scan_dirs=[scan], inbox_path=inbox_path, vault_path=tmp_path,
+            failed_audio_dir=failed_dir,
+        )
+        asyncio.run(gen.process_all())
+        return inbox_path.read_text()
+
+    def test_not_all_clear_while_a_recording_is_parked(self, tmp_path, failed_dir):
+        park(failed_dir, "memo.m4a")
+        text = self._inbox(tmp_path, failed_dir)
+        assert "All clear" not in text
+        assert "see above" in text
+
+    def test_not_all_clear_while_a_note_has_an_error(self, tmp_path, failed_dir):
+        note = tmp_path / "Transcriptions" / "broken.md"
+        note.parent.mkdir(exist_ok=True)
+        note.write_text("---\ncategory: todo\n---\nbody\n")
+        error_registry.record_error(note, "classified", "boom")
+        try:
+            text = self._inbox(tmp_path, failed_dir)
+            assert "All clear" not in text
+        finally:
+            error_registry.clear_all()
+
+    def test_all_clear_when_genuinely_clear(self, tmp_path, failed_dir):
+        error_registry.clear_all()
+        text = self._inbox(tmp_path, failed_dir)
+        assert "All clear" in text
