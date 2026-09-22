@@ -17,6 +17,7 @@ from config.user_config import TARGET_DISCORD_USER_ID
 from integrations.discord import DiscordIOCore
 from ..common.frontmatter import read_frontmatter_from_file
 from ..common import error_registry
+from ..common.processing_control import STOP_KEY, is_processing_stopped
 from ..common.failed_audio import list_failures
 
 logger = setup_logger(__name__)
@@ -94,6 +95,15 @@ class InboxGenerator:
             # Fallback to just filename if not under vault
             return file_path.stem
 
+    def _is_stopped(self, file_path: Path) -> bool:
+        """Whether a note has been marked as stopped. Unreadable counts as not."""
+        try:
+            return is_processing_stopped(read_frontmatter_from_file(file_path))
+        except Exception:
+            # Frontmatter we cannot parse is surfaced as its own error; it is
+            # not a licence to hide whatever else was recorded against the file.
+            return False
+
     def _check_broken_frontmatter(self, file_path: Path) -> Optional[Dict]:
         """Detect pipeline files whose frontmatter can no longer be parsed.
 
@@ -146,6 +156,11 @@ class InboxGenerator:
             frontmatter = read_frontmatter_from_file(file_path)
         except Exception as e:
             logger.debug(f"Could not read frontmatter from {file_path}: {e}")
+            return None
+
+        # A stopped note is not awaiting input — no processor will ever act on
+        # the form it is holding, so listing it here only ages the inbox.
+        if is_processing_stopped(frontmatter):
             return None
 
         # Check for pending forms
@@ -224,8 +239,10 @@ class InboxGenerator:
                     results.append(file_info)
 
         # Add errors recorded by processors, skipping files that no longer exist
+        # or that have since been stopped. A stopped note's stages never run
+        # again, so its last error is history, not something to act on.
         for entry in error_registry.get_errors():
-            if entry['path'].exists():
+            if entry['path'].exists() and not self._is_stopped(entry['path']):
                 errors.append({
                     'name': self._note_name(entry['path']),
                     'stage': entry['stage'],
@@ -390,8 +407,14 @@ class InboxGenerator:
                 forms = ", ".join(item['forms'])
                 status = "⚠️ Errors" if item['has_error'] else "Ready"
                 lines.append(f"| {note_link} | {forms} | {status} |")
-            
-            lines.append("")
+
+            lines.extend([
+                "",
+                f"*Done with a note you don't want to fill in? Add `{STOP_KEY}: true` "
+                "to its properties and it drops off this list. Remove it to pick up "
+                "where it left off.*",
+                "",
+            ])
         
         lines.extend([
             "---",

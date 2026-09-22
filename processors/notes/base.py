@@ -4,6 +4,7 @@ from typing import Optional, Dict
 import aiofiles
 from ..common.frontmatter import read_frontmatter_from_file, set_frontmatter_in_file, parse_frontmatter_from_content
 from ..common import error_registry
+from ..common.processing_control import is_processing_stopped, is_stage_skipped
 from ai_core import AI
 import os
 import asyncio
@@ -45,8 +46,13 @@ class NoteProcessor(ABC):
         # A failure later in this cycle will re-record it.
         error_registry.clear_error(file_path, self.__class__.stage_name)
 
-        # Skip if "abandoned" flag is set in frontmatter
-        if frontmatter.get('abandoned', False):
+        # The note may have asked to be left alone, either entirely or for
+        # this one stage. Checked before anything else: a stopped note should
+        # not reach a processor's own eligibility rules at all.
+        if is_processing_stopped(frontmatter):
+            return False
+
+        if is_stage_skipped(frontmatter, self.__class__.stage_name):
             return False
 
         stages = frontmatter.get('processing_stages', [])

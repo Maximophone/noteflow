@@ -392,6 +392,45 @@ A stage runs only once per file: the base class skips any file whose
 `force_todoist_sync` / `force_meeting_summary` entry in `source_tags` to override
 their eligibility rules.
 
+### Stopping a Note
+
+A note can opt out of the pipeline from its own frontmatter:
+
+```yaml
+---
+# Nothing else runs on this note, and it drops off the NoteFlow Inbox
+processing_stopped: true
+---
+```
+
+Use it when a note is sitting on a form you have decided not to fill in. The
+pipeline halts wherever it happens to be, and the note leaves the inbox — no
+row under "Awaiting Input", no Discord reminder, no recorded errors.
+
+Nothing in the note is rewritten, so this is fully reversible: delete the
+property and the pipeline picks up exactly where it left off, form and all.
+In Obsidian the property shows up as a checkbox in the sidebar, so it is a
+click rather than a hand-edited line. (`abandoned: true` does the same thing
+and is still honoured, for notes that already carry it.)
+
+To block individual stages while letting the rest of the pipeline run, name
+them instead:
+
+```yaml
+---
+# Summarise this meeting as usual, but keep it out of the interaction log
+skip_stages:
+  - interactions_logged
+---
+```
+
+The names are the `processing_stages` entries: `transcribed`, `classified`,
+`speakers_identified`, `entities_resolved`, `meeting_summarized`,
+`interactions_logged`, `todoist_synced`, `notion_transcript_uploaded`,
+`email_summary_generated`, and so on. A note held at an unfilled form still
+shows in the inbox — `skip_stages` only narrows what runs, it does not stop
+the note.
+
 ## License
 
 [Your license here]
