@@ -6,7 +6,7 @@ Contains URLs, endpoints, and other settings for external services used by the a
 # AI Model Configuration
 # These are the standard models used across the application.
 # Update these values when better models become available.
-BIG_MODEL = "gemini3.0pro"      # Primary model for complex tasks
+BIG_MODEL = "sonnet5.5"         # Primary model for complex tasks
 SMALL_MODEL = "gemini3.0flash"  # Fast model for simple tasks (classification, name extraction, etc.)
 
 # Speaker Matcher UI service URL
