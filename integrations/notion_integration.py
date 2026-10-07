@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -6,7 +5,9 @@ import httpx
 from notion_client.errors import APIResponseError, RequestTimeoutError
 from notion_markdown_converter import fetch_page_as_markdown, create_page_from_markdown, create_notion_client, extract_page_id
 
-logger = logging.getLogger(__name__)
+from config.logging_config import setup_logger
+
+logger = setup_logger(__name__)
 
 # The API takes at most 100 blocks per create or append call.
 MAX_BLOCKS_PER_REQUEST = 100
@@ -240,5 +241,13 @@ class NotionClient:
         return _retrying(lambda: self.client.pages.retrieve(page_id=page_id), "page lookup")
 
     def trash_page(self, page_id: str) -> None:
-        """Move a page to the trash, where it can still be restored."""
-        _retrying(lambda: self.client.pages.update(page_id=page_id, in_trash=True), "trash")
+        """Move a page to the trash, where it can still be restored.
+
+        Already in the trash counts as done: Notion refuses to edit a trashed
+        page, which is what a retry after a lost response runs into.
+        """
+        try:
+            _retrying(lambda: self.client.pages.update(page_id=page_id, in_trash=True), "trash")
+        except APIResponseError as e:
+            if "archived" not in str(e):
+                raise

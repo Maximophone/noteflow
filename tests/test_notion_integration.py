@@ -82,3 +82,19 @@ def test_page_trashed_when_retries_run_out(monkeypatch):
     with pytest.raises(httpx.RemoteProtocolError):
         client.create_page_in_data_source("ds", {}, BLOCKS)
     assert api.trashed == ["page-1"]
+
+
+def test_trashing_an_already_trashed_page_is_fine(monkeypatch):
+    from notion_client.errors import APIResponseError
+
+    client, api = make_client([], monkeypatch)
+
+    def already_trashed(page_id, in_trash):
+        raise APIResponseError(
+            httpx.Response(400, request=httpx.Request("PATCH", "https://api.notion.com")),
+            "Can't edit block that is archived. You must unarchive the block before editing.",
+            "validation_error",
+        )
+
+    api.update = already_trashed
+    client.trash_page("page-1")
