@@ -130,7 +130,9 @@ class Paths:
         self.meetings_gdrive_folder_id = "13tFGdok5I-UTlE-3_We7W1Yym_iV7SK7"
 
         # Notion database URLs
-        self.meetings_notion_database_url = "https://www.notion.so/pauseia/24d28fc94b7780d78c4ec96a7a29f5c6?v=24d28fc94b778072b94a000cd54e5004"
+        # "Meeting Transcripts" in the PauseAI Global workspace. Must be shared
+        # with the NOTION_TOKEN integration ("Noteflow").
+        self.meeting_transcripts_notion_database_url = "https://www.notion.so/2f68114391768068b8f4fd0db2fd18a3"
 
     def __iter__(self):
         """Allow iteration over all paths for directory creation."""

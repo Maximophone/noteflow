@@ -42,7 +42,6 @@ from processors.notes.todoist_sync import TodoistSyncProcessor
 from processors.notes.interaction_logger import InteractionLogger
 from processors.audio.video_to_audio import VideoToAudioProcessor
 from processors.notes.base import NoteProcessor
-from processors.notes.base import NoteProcessor
 from processors.notes.notion_uploader import NotionUploadProcessor
 from processors.notes.entity_resolver import EntityResolver
 from processors.notes.inbox_generator import InboxGenerator
@@ -159,7 +158,7 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
             elif cls is InteractionLogger:
                 instance = cls(input_dir=PATHS.transcriptions)
             elif cls is NotionUploadProcessor:
-                instance = cls(input_dir=PATHS.transcriptions, database_url=PATHS.meetings_notion_database_url)
+                instance = cls(input_dir=PATHS.transcriptions, database_url=PATHS.meeting_transcripts_notion_database_url)
             elif cls is EntityResolver:
                 instance = cls(input_dir=PATHS.transcriptions)
 
