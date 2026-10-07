@@ -61,6 +61,7 @@ import yaml
 
 from .base import NoteProcessor
 from .entity_resolver import EntityResolver
+from ..common.notion_push import ACCESS_KEY, PUSH_KEY
 from ..common.frontmatter import (
     parse_frontmatter_from_content,
     read_text_from_content,
@@ -73,8 +74,6 @@ from integrations.notion_integration import NotionClient
 
 logger = setup_logger(__name__)
 
-PUSH_KEY = "notion_push"
-ACCESS_KEY = "notion_access"
 # On a person's note in People/: the address of their Notion account.
 PERSON_EMAIL_KEY = "notion_email"
 
