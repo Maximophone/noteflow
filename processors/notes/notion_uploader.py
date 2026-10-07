@@ -26,9 +26,10 @@ merely unlikely:
   people here have more than one account.
 - Members are looked up in the workspace's user list. Guests are not in
   it -- the API hides them -- so an address not found there is looked for
-  in the people columns of the pages the integration can see, where a
-  guest's account does appear with its email. A guest who sits in no
-  people column anywhere cannot be found, and blocks the push.
+  among the accounts in the people columns, authors and editors of the
+  pages the integration can see, where a guest's account does appear with
+  its email. A guest who shows up in none of those cannot be found, and
+  blocks the push.
 - Any name that cannot be resolved stops the whole push. Nothing is created
   with a partial list, because the fix (add the mapping) is quick and a
   silently dropped person is a surprise later.
@@ -343,7 +344,8 @@ class NotionUploadProcessor(NoteProcessor):
             matches = list(directory.get(email.lower(), {}))
             if len(matches) != 1:
                 hint = (" -- if they are a guest, put them in a people column on any "
-                        "page the integration can see, so it can find their account"
+                        "page the integration can see, so it can find their account "
+                        "(new accounts are picked up within 15 minutes)"
                         if not matches else "")
                 problems.append(
                     f"[[{name}]]: {PERSON_EMAIL_KEY} {email} matches "

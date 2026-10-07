@@ -190,10 +190,10 @@ this stage must not do, so it fails closed:
   matching and no fallback to their ordinary `email`. That property is the whole
   Obsidian→Notion mapping, and your own note needs it too.
 - Guests work too, but the API hides them from its user list. When an address
-  isn't a member's, the stage scans the people columns of every page the
-  integration can see (cached for 15 minutes), where guest accounts appear with
-  their email. A guest who sits in no people column anywhere can't be found;
-  put them in one once and they can be.
+  isn't a member's, the stage scans the people columns, authors and editors of
+  every page the integration can see (cached for 15 minutes), where guest
+  accounts appear with their email. A guest who shows up in none of those can't
+  be found; put them in a people column once and they can be.
 - If any name you listed has no note, no `notion_email`, or an address that doesn't match
   exactly one Notion user, nothing is created and the reason shows in the NoteFlow
   Inbox.

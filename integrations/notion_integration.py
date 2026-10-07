@@ -72,6 +72,8 @@ class NotionClient:
         the email of their account. One who sits in none is not.
         """
         found: Dict[str, Dict[str, Any]] = {}
+        # Authors and editors come as bare ids; looked up once the scan is done.
+        bare_ids = set()
         cursor = None
         while True:
             kwargs = {"page_size": 100, "filter": {"property": "object", "value": "page"}}
@@ -79,6 +81,10 @@ class NotionClient:
                 kwargs["start_cursor"] = cursor
             response = self.client.search(**kwargs)
             for page in response.get("results", []):
+                for key in ("created_by", "last_edited_by"):
+                    user_id = (page.get(key) or {}).get("id")
+                    if user_id:
+                        bare_ids.add(user_id)
                 for prop in (page.get("properties") or {}).values():
                     if not isinstance(prop, dict) or prop.get("type") != "people":
                         continue
@@ -90,8 +96,22 @@ class NotionClient:
                                 "email": (user.get("person") or {}).get("email"),
                             }
             if not response.get("has_more"):
-                return list(found.values())
+                break
             cursor = response.get("next_cursor")
+
+        for user_id in bare_ids - set(found):
+            try:
+                user = self.client.users.retrieve(user_id=user_id)
+            except Exception:
+                # Deleted accounts and placeholder ids: nothing to share with.
+                continue
+            if user.get("type") == "person":
+                found[user_id] = {
+                    "id": user_id,
+                    "name": user.get("name"),
+                    "email": (user.get("person") or {}).get("email"),
+                }
+        return list(found.values())
 
     def get_single_data_source(self, database_url: str) -> Dict[str, Any]:
         """The schema of a database's data source.
