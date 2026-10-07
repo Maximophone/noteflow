@@ -43,6 +43,7 @@ class FakeNotion:
             {"id": OWNER_ID, "name": "Maxime Fournes", "email": "maxime@example.org"},
         ]
         self.scans = 0
+        self.existing_pages = []
         self.created = []
         self.trashed = []
         # Lets a test make Notion report back a different participant list.
@@ -57,6 +58,12 @@ class FakeNotion:
 
     def get_single_data_source(self, database_url):
         return self.schema
+
+    def own_user_id(self):
+        return "bot-noteflow"
+
+    def find_pages_by_title(self, data_source_id, title_property, title):
+        return [p for p in self.existing_pages if p["title"] == title]
 
     def create_page_in_data_source(self, data_source_id, properties, blocks):
         page = {"id": f"page-{len(self.created) + 1}", "url": "https://notion.so/page",
@@ -236,6 +243,20 @@ class TestAccess:
         with pytest.raises(ValueError, match="Participants"):
             await proc.process_file(write_note("notion_push: true\n"))
         assert notion.created == []
+
+
+class TestLeftovers:
+    @pytest.mark.asyncio
+    async def test_trashes_own_leftovers_but_not_hand_made_pages(self, setup):
+        proc, notion, _, write_note = setup
+        notion.existing_pages = [
+            {"id": "old-bot", "title": "2026-09-29-meeting", "created_by": {"id": "bot-noteflow"}},
+            {"id": "old-human", "title": "2026-09-29-meeting", "created_by": {"id": OWNER_ID}},
+            {"id": "other", "title": "2026-09-30-other", "created_by": {"id": "bot-noteflow"}},
+        ]
+        await proc.process_file(write_note("notion_push: true\n"))
+        assert notion.trashed == ["old-bot"]
+        assert len(notion.created) == 1
 
 
 class TestGuests:

@@ -1,8 +1,38 @@
+import logging
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+import httpx
+from notion_client.errors import APIResponseError, RequestTimeoutError
 from notion_markdown_converter import fetch_page_as_markdown, create_page_from_markdown, create_notion_client, extract_page_id
-from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # The API takes at most 100 blocks per create or append call.
 MAX_BLOCKS_PER_REQUEST = 100
+
+# Notion drops connections now and then ("Server disconnected without
+# sending a response"), and rate-limits with 429. Both pass if retried.
+RETRY_DELAYS_SECONDS = (1, 3, 8)
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _is_transient(error: Exception) -> bool:
+    if isinstance(error, (httpx.TransportError, RequestTimeoutError)):
+        return True
+    return isinstance(error, APIResponseError) and error.status in _RETRY_STATUSES
+
+
+def _retrying(call: Callable[[], Any], what: str) -> Any:
+    """Run a call that is safe to repeat, retrying transient failures."""
+    for delay in RETRY_DELAYS_SECONDS + (None,):
+        try:
+            return call()
+        except Exception as e:
+            if delay is None or not _is_transient(e):
+                raise
+            logger.warning("Notion %s failed (%s), retrying in %ss", what, e, delay)
+            time.sleep(delay)
 
 
 class NotionClient:
@@ -51,7 +81,7 @@ class NotionClient:
             kwargs = {"page_size": 100}
             if cursor:
                 kwargs["start_cursor"] = cursor
-            response = self.client.users.list(**kwargs)
+            response = _retrying(lambda: self.client.users.list(**kwargs), "user list")
             for user in response.get("results", []):
                 if user.get("type") != "person":
                     continue
@@ -79,7 +109,7 @@ class NotionClient:
             kwargs = {"page_size": 100, "filter": {"property": "object", "value": "page"}}
             if cursor:
                 kwargs["start_cursor"] = cursor
-            response = self.client.search(**kwargs)
+            response = _retrying(lambda: self.client.search(**kwargs), "search")
             for page in response.get("results", []):
                 for key in ("created_by", "last_edited_by"):
                     user_id = (page.get(key) or {}).get("id")
@@ -101,7 +131,7 @@ class NotionClient:
 
         for user_id in bare_ids - set(found):
             try:
-                user = self.client.users.retrieve(user_id=user_id)
+                user = _retrying(lambda: self.client.users.retrieve(user_id=user_id), "user lookup")
             except Exception:
                 # Deleted accounts and placeholder ids: nothing to share with.
                 continue
@@ -119,36 +149,96 @@ class NotionClient:
         Refuses databases with several data sources: which one a page lands
         in would then be a guess.
         """
-        database = self.client.databases.retrieve(database_id=extract_page_id(database_url))
+        database = _retrying(
+            lambda: self.client.databases.retrieve(database_id=extract_page_id(database_url)),
+            "database lookup")
         sources = database.get("data_sources") or []
         if len(sources) != 1:
             raise ValueError(
                 f"Expected exactly one data source in database {database_url}, found {len(sources)}"
             )
-        return self.client.data_sources.retrieve(data_source_id=sources[0]["id"])
+        return _retrying(
+            lambda: self.client.data_sources.retrieve(data_source_id=sources[0]["id"]),
+            "data source lookup")
+
+    def own_user_id(self) -> str:
+        """The integration's own bot user: the author of every page it creates."""
+        return _retrying(lambda: self.client.users.me(), "own user lookup")["id"]
+
+    def find_pages_by_title(self, data_source_id: str, title_property: str, title: str) -> List[Dict[str, Any]]:
+        """Pages in a data source whose title is exactly `title`."""
+        response = _retrying(lambda: self.client.data_sources.query(
+            data_source_id=data_source_id,
+            filter={"property": title_property, "title": {"equals": title}},
+        ), "query")
+        return response.get("results", [])
 
     def create_page_in_data_source(self, data_source_id: str, properties: Dict[str, Any],
                                    blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Create a page with its properties set, then fill in its content.
 
         Properties go in with the create call itself, so a page never exists
-        without them -- even if appending the content fails partway.
+        without them -- even if appending the content fails partway. The
+        create itself is not retried: a dropped response may hide a page
+        that was made, and a blind retry would make a second one.
         """
         page = self.client.pages.create(
             parent={"type": "data_source_id", "data_source_id": data_source_id},
             properties=properties,
             children=blocks[:MAX_BLOCKS_PER_REQUEST],
         )
-        for start in range(MAX_BLOCKS_PER_REQUEST, len(blocks), MAX_BLOCKS_PER_REQUEST):
-            self.client.blocks.children.append(
-                block_id=page["id"],
-                children=blocks[start:start + MAX_BLOCKS_PER_REQUEST],
-            )
+        try:
+            self._append_blocks(page["id"], blocks[MAX_BLOCKS_PER_REQUEST:],
+                                already=min(len(blocks), MAX_BLOCKS_PER_REQUEST))
+        except Exception:
+            # A half-written page is worse than none; the caller retries from scratch.
+            logger.error("Filling Notion page %s failed; moving it to the trash", page["id"])
+            self.trash_page(page["id"])
+            raise
         return page
 
+    def _append_blocks(self, page_id: str, blocks: List[Dict[str, Any]], already: int) -> None:
+        """Append in batches. A batch whose response was lost is checked before it is resent.
+
+        Resending blindly could add the same paragraphs twice, so after a
+        failure the page's block count says whether the batch landed.
+        """
+        expected = already
+        for start in range(0, len(blocks), MAX_BLOCKS_PER_REQUEST):
+            chunk = blocks[start:start + MAX_BLOCKS_PER_REQUEST]
+            for delay in RETRY_DELAYS_SECONDS + (None,):
+                try:
+                    self.client.blocks.children.append(block_id=page_id, children=chunk)
+                    break
+                except Exception as e:
+                    if delay is None or not _is_transient(e):
+                        raise
+                    logger.warning("Notion append failed (%s), checking the page", e)
+                    time.sleep(delay)
+                    count = self._count_blocks(page_id)
+                    if count == expected + len(chunk):
+                        break  # it landed; only the response was lost
+                    if count != expected:
+                        raise RuntimeError(
+                            f"Notion page {page_id} has {count} blocks, expected "
+                            f"{expected} or {expected + len(chunk)}; not retrying") from e
+            expected += len(chunk)
+
+    def _count_blocks(self, page_id: str) -> int:
+        count, cursor = 0, None
+        while True:
+            kwargs = {"block_id": page_id, "page_size": 100}
+            if cursor:
+                kwargs["start_cursor"] = cursor
+            response = _retrying(lambda: self.client.blocks.children.list(**kwargs), "block list")
+            count += len(response.get("results", []))
+            if not response.get("has_more"):
+                return count
+            cursor = response.get("next_cursor")
+
     def get_page(self, page_id: str) -> Dict[str, Any]:
-        return self.client.pages.retrieve(page_id=page_id)
+        return _retrying(lambda: self.client.pages.retrieve(page_id=page_id), "page lookup")
 
     def trash_page(self, page_id: str) -> None:
         """Move a page to the trash, where it can still be restored."""
-        self.client.pages.update(page_id=page_id, in_trash=True)
+        _retrying(lambda: self.client.pages.update(page_id=page_id, in_trash=True), "trash")

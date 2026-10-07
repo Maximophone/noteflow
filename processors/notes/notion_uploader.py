@@ -301,21 +301,11 @@ class NotionUploadProcessor(NoteProcessor):
         optional = [n for n in speaker_names(frontmatter) if n not in required] if with_speakers else []
         names, user_ids, left_out = await self._resolve_people(required, optional)
 
-        schema = self.notion.get_single_data_source(self.database_url)
-        self._check_schema(schema)
-
-        title = file_path.stem
-        properties = {
-            TITLE_PROPERTY: {"title": [{"text": {"content": title}}]},
-            DATE_PROPERTY: {"date": {"start": str(meeting_date)}},
-            PARTICIPANTS_PROPERTY: {"people": [{"id": uid} for uid in user_ids]},
-        }
-
         logger.info("Pushing transcript %s to Notion, shared with: %s", filename, ", ".join(names))
-        page = self.notion.create_page_in_data_source(
-            schema["id"], properties, transcript_blocks(transcript)
+        # Dozens of blocking requests: off the event loop, which every other stage shares.
+        page = await asyncio.to_thread(
+            self._push, file_path.stem, str(meeting_date), user_ids, transcript_blocks(transcript)
         )
-        self._verify_participants(page["id"], user_ids)
 
         # Re-read: the note may have been edited while the push ran.
         fresh = parse_frontmatter_from_content(await self.read_file(filename)) or frontmatter
@@ -326,6 +316,35 @@ class NotionUploadProcessor(NoteProcessor):
         set_frontmatter_in_file(file_path, fresh)
         os.utime(file_path, None)
         logger.info("Pushed transcript %s to Notion: %s", filename, page.get("url"))
+
+    def _push(self, title: str, meeting_date: str, user_ids: List[str], blocks: List[Dict]) -> Dict:
+        """Create the page, filled and shared, and check who it is shared with."""
+        schema = self.notion.get_single_data_source(self.database_url)
+        self._check_schema(schema)
+        self._trash_leftovers(schema["id"], title)
+        properties = {
+            TITLE_PROPERTY: {"title": [{"text": {"content": title}}]},
+            DATE_PROPERTY: {"date": {"start": meeting_date}},
+            PARTICIPANTS_PROPERTY: {"people": [{"id": uid} for uid in user_ids]},
+        }
+        page = self.notion.create_page_in_data_source(schema["id"], properties, blocks)
+        self._verify_participants(page["id"], user_ids)
+        return page
+
+    def _trash_leftovers(self, data_source_id: str, title: str) -> None:
+        """Trash pages an earlier attempt at this push left behind.
+
+        A push that dies between creating the page and recording it in the
+        note leaves a page the note does not know about, and the retry would
+        sit next to it. Only pages this integration created are touched --
+        never one a person made by hand under the same name.
+        """
+        own_id = self.notion.own_user_id()
+        for page in self.notion.find_pages_by_title(data_source_id, TITLE_PROPERTY, title):
+            if (page.get("created_by") or {}).get("id") == own_id:
+                logger.warning("Trashing leftover Notion page %s from an earlier attempt at %s",
+                               page["id"], title)
+                self.notion.trash_page(page["id"])
 
     async def _resolve_people(self, required: List[str],
                               optional: List[str]) -> Tuple[List[str], List[str], List[str]]:
@@ -346,7 +365,7 @@ class NotionUploadProcessor(NoteProcessor):
             elif is_optional:
                 left_out.append(name)
 
-        directory = _index_by_email(self.notion.list_people())
+        directory = _index_by_email(await asyncio.to_thread(self.notion.list_people))
         if not directory:
             raise AccessError(
                 "Notion returned no user emails; the integration needs the "
