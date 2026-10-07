@@ -144,6 +144,7 @@ def parse_access_list(value: Any) -> Tuple[List[str], bool]:
 
     names, speakers = [], False
     for entry in value:
+        entry = _unquoted_wikilink(entry)
         if not isinstance(entry, str) or not entry.strip():
             raise AccessError(f"'{ACCESS_KEY}' has an entry that is not a name: {entry!r}")
         if entry.strip().lower() == SPEAKERS_KEYWORD:
@@ -155,6 +156,21 @@ def parse_access_list(value: Any) -> Tuple[List[str], bool]:
         if name not in names:
             names.append(name)
     return names, speakers
+
+
+def _unquoted_wikilink(entry: Any) -> Any:
+    """[['Chay Morris']] -> '[[Chay Morris]]'.
+
+    An unquoted `[[Chay Morris]]` in YAML is a list holding a list holding
+    the name, and stages that rewrite the frontmatter then store it as
+    `- - - Chay Morris`. That exact shape has no other source, so it is read
+    as the link it was typed as. Any other nesting is left to be rejected.
+    """
+    if (isinstance(entry, list) and len(entry) == 1
+            and isinstance(entry[0], list) and len(entry[0]) == 1
+            and isinstance(entry[0][0], str)):
+        return f"[[{entry[0][0]}]]"
+    return entry
 
 
 def speaker_names(frontmatter: Dict) -> List[str]:

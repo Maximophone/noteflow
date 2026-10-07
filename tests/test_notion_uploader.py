@@ -334,6 +334,16 @@ class TestParseAccessList:
     def test_deduplicates(self):
         assert parse_access_list(["[[A]]", "A"]) == (["A"], False)
 
+    def test_unquoted_wikilink_yaml_shape(self):
+        # What YAML makes of an unquoted `- [[Chay Morris]]`.
+        assert parse_access_list(["speakers", [["Chay Morris"]]]) == (["Chay Morris"], True)
+
+    @pytest.mark.asyncio
+    async def test_unquoted_wikilink_in_note(self, setup):
+        proc, notion, _, write_note = setup
+        await proc.process_file(write_note("notion_push: true\nnotion_access:\n- [[Irina Tavera]]\n"))
+        assert shared_ids(notion.created[0]) == [OWNER_ID, IRINA_ID]
+
     def test_speakers_keyword(self):
         assert parse_access_list("speakers") == ([], True)
         assert parse_access_list(["Speakers", "[[A]]"]) == (["A"], True)
@@ -341,7 +351,8 @@ class TestParseAccessList:
     def test_linked_speakers_is_a_person_not_the_keyword(self):
         assert parse_access_list(["[[speakers]]"]) == (["speakers"], False)
 
-    @pytest.mark.parametrize("bad", [{"a": 1}, [None], [""], ["[[broken"], 3])
+    @pytest.mark.parametrize("bad", [{"a": 1}, [None], [""], ["[[broken"], 3,
+                                     [[["A", "B"]]], [[[["A"]]]], [["A"]]])
     def test_rejects_anything_else(self, bad):
         with pytest.raises(AccessError):
             parse_access_list(bad)
