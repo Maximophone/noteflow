@@ -47,6 +47,25 @@ def get_recording_date(file_path: Path) -> datetime:
         return datetime.fromtimestamp(file_path.stat().st_mtime)
 
 
+def unused_stem(stem: str, *candidates) -> str:
+    """The first of stem, stem-2, stem-3... for which no candidate path exists.
+
+    Each candidate is a function from a stem to a path, so several files that
+    must share one name (a transcript's .md and .json) are checked together.
+
+    Recordings are named by hand, so two from the same day often share a name.
+    Moving or writing onto that name used to replace the earlier recording and
+    its transcript without a trace.
+    """
+    n = 1
+    name = stem
+    while any(candidate(name).exists() for candidate in candidates):
+        n += 1
+        name = f"{stem}-{n}"
+    return name
 
 
-
+def unused_path(path: Path) -> Path:
+    """path itself if nothing is there yet, otherwise the next free -2, -3... variant."""
+    stem = unused_stem(path.stem, lambda s: path.with_name(s + path.suffix))
+    return path.with_name(stem + path.suffix)

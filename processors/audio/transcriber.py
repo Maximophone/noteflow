@@ -6,7 +6,7 @@ import assemblyai
 from typing import Set, Dict
 from datetime import datetime
 
-from .utils import get_recording_date
+from .utils import get_recording_date, unused_path, unused_stem
 from ..common.frontmatter import frontmatter_to_text
 
 from ai_core import AI
@@ -205,7 +205,14 @@ class AudioTranscriber:
             
             # Create safe filename base
             safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            base_filename = f"{date_str}-{safe_title}"
+            # Titles come from hand-typed filenames, so two meetings on the same
+            # day often share one; the later transcript gets a -2 suffix rather
+            # than overwriting the earlier one.
+            base_filename = unused_stem(
+                f"{date_str}-{safe_title}",
+                lambda s: self.output_dir / f"{s}.md",
+                lambda s: self.output_dir / f"{s}.json",
+            )
             
             # Save JSON response
             json_filename = f"{base_filename}.json"
@@ -215,7 +222,8 @@ class AudioTranscriber:
             
             logger.debug("Saved JSON: %s", json_filename)
 
-            new_filename = date_str + "_" + filename
+            processed_path = unused_path(self.processed_dir / f"{date_str}_{filename}")
+            new_filename = processed_path.name
 
             # Prepare frontmatter
             frontmatter = {
@@ -240,7 +248,7 @@ class AudioTranscriber:
             logger.debug("Saved MD: %s", md_filename)
 
             # Move original file to processed folder
-            file_path.rename(self.processed_dir / new_filename)
+            file_path.rename(processed_path)
             
             logger.info("Processed: %s -> %s", filename, md_filename)
             
@@ -250,7 +258,7 @@ class AudioTranscriber:
             # indefinitely.
             logger.error("Cannot transcribe %s: %s", filename, e)
             self.failed_dir.mkdir(parents=True, exist_ok=True)
-            parked = self.failed_dir / filename
+            parked = unused_path(self.failed_dir / filename)
             try:
                 file_path.rename(parked)
             except OSError as move_error:
