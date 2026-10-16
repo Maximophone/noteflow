@@ -11,6 +11,7 @@ from ..common.frontmatter import frontmatter_to_text
 
 from ai_core import AI
 from ai_core.types import Message, MessageContent
+import errno
 import re
 import os
 import asyncio
@@ -273,7 +274,16 @@ class AudioTranscriber:
             # deleting the recording clears the report by itself.
             write_failure_reason(parked, str(e))
         except Exception as e:
-            logger.error("Error processing %s: %s", filename, str(e))
+            if isinstance(e, OSError) and e.errno == errno.EDEADLK:
+                # Drive left the recording in the cloud and this process may not
+                # download it (see utils/dataless_files.py). Reading it once from
+                # a shell, e.g. `cat file > /dev/null`, fetches it.
+                logger.error(
+                    "Error processing %s: file is a cloud-only Drive placeholder, "
+                    "not downloaded (%s)", filename, e,
+                )
+            else:
+                logger.error("Error processing %s: %s", filename, str(e))
             # Record the failure to prevent immediate re-queueing
             self.failed_recently[filename] = datetime.now()
             raise

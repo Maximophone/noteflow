@@ -49,6 +49,7 @@ from processors.notes.email_digest import EmailDigestProcessor
 from processors.notes.email_summary_generator import EmailSummaryGenerator
 
 from integrations.discord import DiscordIOCore
+from utils.dataless_files import enable_dataless_file_downloads
 
 # Ensure stdout/stderr use UTF-8 on Windows
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -219,6 +220,10 @@ def instantiate_all_processors(discord_io: DiscordIOCore) -> Dict[str, Any]:
 
 
 async def main(daily_restart_time: str = None):
+    # Recordings arrive as cloud-only Drive placeholders; without this, reading
+    # one from under launchd fails with EDEADLK instead of downloading it.
+    enable_dataless_file_downloads()
+
     # Create all required directories
     for path in PATHS:
         if hasattr(path, 'parent') and path.suffix:
