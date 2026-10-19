@@ -5,6 +5,8 @@ import asyncio
 from config.logging_config import setup_logger
 import shutil
 
+from .utils import unused_stem
+
 logger = setup_logger(__name__)
 
 class VideoToAudioProcessor:
@@ -40,13 +42,21 @@ class VideoToAudioProcessor:
         
         try:
             input_path = self.input_dir / filename
-            output_path = self.output_dir / f"{os.path.splitext(filename)[0]}.m4a"
+            stem, ext = os.path.splitext(filename)
+            # A second recording given the same name as an earlier one gets a
+            # -2 suffix, so it lands beside that recording instead of over it.
+            stem = unused_stem(
+                stem,
+                lambda s: self.output_dir / f"{s}.m4a",
+                lambda s: self.processed_dir / f"{s}{ext}",
+            )
+            output_path = self.output_dir / f"{stem}.m4a"
             
             # Extract audio using ffmpeg
             await self._extract_audio(input_path, output_path)
             
             # Move original file to processed directory
-            processed_path = self.processed_dir / filename
+            processed_path = self.processed_dir / f"{stem}{ext}"
             shutil.move(str(input_path), str(processed_path))
             
             logger.info("Extracted audio: %s", output_path)

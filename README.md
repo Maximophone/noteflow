@@ -36,7 +36,7 @@ A document processing pipeline for audio transcription and note management.
 | `EmailDigestProcessor` | Fetches daily important emails from Gmail with AI filtering |
 | `EmailSummaryGenerator` | Generates AI summaries for email digests and maintains monthly index |
 | `InboxGenerator` | Generates inbox showing files awaiting user input (multi-directory) |
-| `NotionUploadProcessor` | Uploads transcripts to Notion |
+| `NotionUploadProcessor` | Pushes a meeting's raw transcript to Notion, on request, shared only with the people the note names |
 
 ### External Content Processors
 | Processor | Description |
@@ -94,7 +94,7 @@ GOOGLE_API_KEY=your_google_gemini_key
 ANTHROPIC_API_KEY=your_anthropic_key
 OPENAI_API_KEY=your_openai_key
 CODA_API_KEY=your_coda_key
-NOTION_API_KEY=your_notion_key
+NOTION_TOKEN=your_notion_integration_token
 TODOIST_API_TOKEN=your_todoist_token
 ```
 
@@ -159,6 +159,55 @@ in the Obsidian summary form is the only approval step — the sync itself is au
 - Each stage's `START_DATE` gates eligibility; older notes are skipped unless tagged
   `force_todoist_sync`.
 - Without `TODOIST_API_TOKEN` all three stages are inert (log a warning, process nothing).
+
+### Pushing a Transcript to Notion
+
+A meeting's raw transcript (not its summary) can be pushed to the **Meeting
+Transcripts** database in the PauseAI Global Notion. Nothing is pushed unless the
+note asks for it, in its frontmatter:
+
+```yaml
+---
+notion_push: true        # a checkbox in Obsidian's property editor
+notion_access:           # who besides you can open it
+  - "[[Irina Tavera]]"
+---
+```
+
+Access in that database is per row: whoever is in the *Participants (Can View
+and Edit)* column can open the page. Getting that column wrong is the one thing
+this stage must not do, so it fails closed:
+
+- You are always on the list. Everyone else must be named in `notion_access`;
+  being a speaker in the meeting grants nothing. An empty or missing list shares
+  with you only.
+- To share with everyone who spoke, write `notion_access: speakers` (or add
+  `speakers` as one entry next to names). Speakers without a `notion_email`, such
+  as outside guests, are left out rather than blocking the push, and are listed
+  under `notion_not_shared_with`. This is the only way speaking grants access.
+- Each name goes through its People note, which must carry a `notion_email`
+  property — the address of that person's Notion account. There is no fuzzy
+  matching and no fallback to their ordinary `email`. That property is the whole
+  Obsidian→Notion mapping, and your own note needs it too.
+- Guests work too, but the API hides them from its user list. When an address
+  isn't a member's, the stage scans the people columns, authors and editors of
+  every page the integration can see (cached for 15 minutes), where guest
+  accounts appear with their email. A guest who shows up in none of those can't
+  be found; put them in a people column once and they can be.
+- If any name you listed has no note, no `notion_email`, or an address that doesn't match
+  exactly one Notion user, nothing is created and the reason shows in the NoteFlow
+  Inbox.
+- The participant list is set when the page is created and read back right
+  after; if Notion holds anything else, the page goes to the trash.
+
+Once pushed, the note gets `notion_transcript_url` and `notion_shared_with` (the
+list actually shared with). Changing `notion_access` afterwards does nothing —
+edit the column in Notion. The stage waits for `entities_resolved`, so ticking
+the box early is fine.
+
+The database must be shared with the `Noteflow` integration (the
+`NOTION_TOKEN`), and that integration needs the *Read user information including
+email addresses* capability.
 
 ## Usage
 
@@ -426,7 +475,7 @@ skip_stages:
 
 The names are the `processing_stages` entries: `transcribed`, `classified`,
 `speakers_identified`, `entities_resolved`, `meeting_summarized`,
-`interactions_logged`, `todoist_synced`, `notion_transcript_uploaded`,
+`interactions_logged`, `todoist_synced`, `notion_transcript_pushed`,
 `email_summary_generated`, and so on. A note held at an unfilled form still
 shows in the inbox — `skip_stages` only narrows what runs, it does not stop
 the note.

@@ -73,6 +73,7 @@ class TestTranscriptClassifier:
         result = input_file.read_text(encoding='utf-8')
         assert "category: diary" in result
         assert "- diary" in result  # tag should be added
+        assert "notion_push" not in result  # only meetings get the Notion properties
         
         # AI should not have been called
         assert len(mock_ai.call_log) == 0

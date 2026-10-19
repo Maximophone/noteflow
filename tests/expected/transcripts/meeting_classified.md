@@ -2,6 +2,8 @@
 AutoNoteMover: disable
 category: meeting
 date: '2025-12-27'
+notion_access: []
+notion_push: false
 original_file: 2025-12-27_test-meeting.m4a
 processing_stages:
 - transcribed

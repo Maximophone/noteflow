@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import aiofiles
 from .base import NoteProcessor
+from ..common.notion_push import add_push_defaults
 from ..common.frontmatter import read_frontmatter_from_file, set_frontmatter_in_file, read_text_from_content
 from prompts.prompts import get_prompt
 from ai_core.types import Message, MessageContent
@@ -68,6 +69,8 @@ class TranscriptClassifier(NoteProcessor):
         if "tags" not in frontmatter:
             frontmatter["tags"] = []
         frontmatter["tags"].append(category)
+        if category == "meeting":
+            add_push_defaults(frontmatter)
         
         set_frontmatter_in_file(file_path, frontmatter)
         logger.info("Updated classification for: %s", filename)

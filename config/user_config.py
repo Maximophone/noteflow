@@ -11,6 +11,12 @@ USER_NAME = "Maxime Fournes"
 USER_EMAIL = "maxime@pauseia.fr"
 USER_ORGANIZATION = "Pause IA"
 
+# Notion transcript push
+# Always given access to a pushed transcript, on top of the note's own
+# notion_access list. Resolved like everyone else: through the notion_email
+# property on this People note.
+NOTION_TRANSCRIPT_OWNER = f"[[{USER_NAME}]]"
+
 # Todoist
 # The project and section for each task are chosen by the AI from whatever projects
 # exist at the time, so new projects are picked up with no config change. Tasks that
