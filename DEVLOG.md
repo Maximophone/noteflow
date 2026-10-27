@@ -54,6 +54,15 @@ there into that person's prefilled description. One such row was corrected by ha
 mis-resolution therefore spreads beyond the transcript, which makes clearing the audit
 list more valuable than it looks.
 
+### Organisations limited to a tracked list
+Since May, detection only reported organisations that were already known. But "known"
+meant every organisation ever linked: 546 of them, most from before May (media, apps,
+companies). With the new prompt the AI reported most of them, and since the history
+linked them consistently, they were auto-accepted. Organisations are now limited to
+`KnowledgeBot/Tracked Organisations.md`, a list of links the user edits (PauseAI family,
+partners, funders). Any other organisation is dropped: not linked, not in the form, and
+not recorded in the registry.
+
 ### Not reaching zero mistakes
 Speech recognition garbles names, and some names are ambiguous ("Ben" maps to six people
 in the history). New names spelled from outside knowledge cannot be guessed from the

@@ -113,6 +113,9 @@ class EntityRegistry:
         # Descriptions the user can edit (Entity Descriptions.md), by entity key.
         # They take precedence over descriptions learnt from meetings.
         self.curated: Dict[str, str] = {}
+        # Organisations the user wants linked (Tracked Organisations.md), by key.
+        # None means no restriction; the resolver always sets it.
+        self.tracked_orgs: Optional[Dict[str, str]] = None
         self._alias_index: Optional[Dict[str, Dict[str, int]]] = None
         self.load()
 
@@ -274,7 +277,7 @@ class EntityRegistry:
 
         for key, sim in ranked:
             entity = self.entities.get(key)
-            if not entity:
+            if not entity or not self.is_tracked(key):
                 continue
             companions = entity.get("companions", {})
             ev.candidates.append(Candidate(
@@ -315,11 +318,30 @@ class EntityRegistry:
             parts.append("usually with: " + ", ".join(names))
         return " — ".join(parts)
 
+    def is_tracked(self, key: str) -> bool:
+        """False for an organisation the user does not want linked."""
+        if self.tracked_orgs is None or key in self.tracked_orgs:
+            return True
+        entity = self.entities.get(key)
+        return not (entity and entity["type"] == "org")
+
     def reference_text(self, max_aliases: int = 4) -> str:
-        """Every known entity with its commonest spellings, for the detection prompt."""
+        """Every known entity with its commonest spellings, for the detection prompt.
+
+        Organisations are limited to the tracked ones, when a list is set.
+        """
         sections = []
         for entity_type, title in [("people", "People"), ("org", "Organisations")]:
-            entities = [e for e in self.entities.values() if e["type"] == entity_type]
+            entities = [
+                e for k, e in self.entities.items()
+                if e["type"] == entity_type and (entity_type != "org" or self.is_tracked(k))
+            ]
+            if entity_type == "org" and self.tracked_orgs:
+                # Listed organisations never linked before still need to be known
+                entities += [
+                    {"link": link, "aliases": {}} for k, link in self.tracked_orgs.items()
+                    if k not in self.entities
+                ]
             if not entities:
                 continue
             lines = [f"## {title}"]
@@ -340,6 +362,7 @@ class EntityRegistry:
         registry.user_key = entity_key(user_link)
         registry.entities, registry.rejected, registry.processed = {}, {}, {}
         registry.curated = {}
+        registry.tracked_orgs = None
         registry._alias_index = None
         for filename, meeting_date, resolved, attendees in sorted(meetings, key=lambda m: (str(m[1]), m[0])):
             registry.record_meeting(filename, meeting_date, resolved, attendees)
@@ -388,3 +411,26 @@ def write_descriptions(path: Path, rows: Dict[str, Tuple[str, str]]) -> None:
     for link, text in sorted(rows.values(), key=lambda r: link_target(r[0]).lower()):
         lines.append(f"| {link} | {text.replace('|', '/')} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+# ===== Tracked organisations =====
+
+TRACKED_ORGS_HEADER = """# Tracked Organisations
+
+The organisations the entity resolver links in meetings. Any other organisation is
+ignored: not linked, and not shown in the review form. People are not affected.
+Add or remove [[links]] freely; the resolver reads this file every time. Headings and
+any text other than links are just for you.
+"""
+
+
+def load_tracked_orgs(path: Path) -> Dict[str, str]:
+    """Entity key -> link for every [[link]] in the tracked organisations note.
+
+    A missing note means no organisations are linked.
+    """
+    if not path.exists():
+        logger.warning("No %s: organisations will not be linked", path.name)
+        return {}
+    links = re.findall(r"\[\[[^\]]+\]\]", path.read_text(encoding="utf-8"))
+    return {entity_key(link): link for link in links if entity_key(link)}
