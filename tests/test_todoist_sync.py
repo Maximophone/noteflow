@@ -523,7 +523,7 @@ class TestProcessFile:
         path = processor.input_dir / "bare.md"
         path.write_text("---\ncategory: meeting\ndate: '2026-07-29'\n---\nSpeaker A: hi\n")
 
-        with pytest.raises(ValueError, match="No validated meeting summary"):
+        with pytest.raises(ValueError, match="No meeting summary"):
             await processor.process_file("bare.md")
 
     async def test_partial_failure_records_successes_and_raises(self, processor, mock_ai):

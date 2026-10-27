@@ -4,9 +4,9 @@ Todoist Sync Processor (meetings)
 Runs after a meeting has been summarised and pushes the action items that belong to
 the user into Todoist, with an AI-chosen project, section, due date, urgency and labels.
 
-The action items come from the *validated* meeting summary, so they have already been
-through the human review gate in MeetingSummaryGenerator's Obsidian form. That is why
-this stage writes to Todoist without asking for a second confirmation. Every task it
+The action items come from the meeting summary, which MeetingSummaryGenerator approves
+automatically (the user stopped reviewing them by hand). This stage writes to Todoist
+without asking for confirmation. Every task it
 creates carries a marker label so AI-created tasks can be filtered and cleaned up.
 
 The Todoist machinery itself lives in todoist_base.py, shared with the dictated-todo
@@ -27,11 +27,11 @@ logger = setup_logger(__name__)
 class TodoistSyncProcessor(TodoistTaskSync):
     """Pushes the user's meeting action items to Todoist.
 
-    **Pipeline position**: runs on validated meeting summaries
+    **Pipeline position**: runs on finished meeting summaries
     (``required_stage = meeting_summarized``).
 
     **Flow**:
-        1. Extract the ``## Action Items`` block from the validated summary
+        1. Extract the ``## Action Items`` block from the meeting summary
         2. Skip early (no AI call) if the user is not named anywhere in it
         3. Fetch live Todoist state: projects, sections, labels, open tasks
         4. One AI call decides ownership, wording, due date, urgency, project, section,
@@ -65,7 +65,7 @@ class TodoistSyncProcessor(TodoistTaskSync):
     # ===== Summary parsing =====
 
     def _extract_summary(self, content: str) -> Optional[str]:
-        """Pull the validated summary out of its callout block."""
+        """Pull the summary out of its callout block."""
         start = content.find(MeetingSummaryGenerator.SUMMARY_START)
         end = content.find(MeetingSummaryGenerator.SUMMARY_END)
         if start == -1 or end == -1:
@@ -99,7 +99,7 @@ class TodoistSyncProcessor(TodoistTaskSync):
     ) -> Optional[SourceMaterial]:
         summary = self._extract_summary(content)
         if summary is None:
-            raise ValueError(f"No validated meeting summary found in: {filename}")
+            raise ValueError(f"No meeting summary found in: {filename}")
 
         action_lines = self._action_item_lines(self._extract_section(summary, 'Action Items'))
         if not action_lines:

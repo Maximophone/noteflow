@@ -1,8 +1,9 @@
 """
 Meeting Summary Generator Processor
 
-Generates AI-powered meeting summaries with user validation,
-then appends validated summaries to a monthly meetings index file.
+Generates AI-powered meeting summaries and appends them to a monthly
+meetings index file. Summaries are approved automatically; the review form
+is only used when generation fails, so the user can write one by hand.
 """
 
 from pathlib import Path
@@ -30,9 +31,7 @@ class ResultsNotReadyError(Exception):
 
 
 class MeetingSummaryGenerator(NoteProcessor):
-    """Generates meeting summaries with user validation and monthly index updates.
-    
-    This processor implements a multi-substage workflow:
+    """Generates meeting summaries and keeps the monthly index up to date.
     
     **Substage 1: AI Summary Generation**
         - Loads transcript with frontmatter
@@ -40,18 +39,16 @@ class MeetingSummaryGenerator(NoteProcessor):
         - Loads People notes for each attendee
         - Generates structured summary via AI
     
-    **Substage 2: Form Creation**
-        - Prepends generated summary to transcript
-        - Adds "Finished" checkbox for user validation
-        - Sends Discord notification
+    **Substage 2: Finalisation** (automatic)
+        - Writes the summary callout above the transcript
+        - Appends the summary to the monthly meetings index
     
-    **Substage 3: Processing**
-        - Waits for user to check "Finished"
-        - Replaces form with summary callout
-        - Appends summary to monthly meetings index
+    **Fallback form**: if the AI call fails, a form is written instead so the
+    user can write the summary by hand and check "Finished". Forms left over
+    from when every summary needed sign-off are still processed the same way.
     
     **Frontmatter Fields**:
-        - meeting_summary_pending: True while waiting for user input
+        - meeting_summary_pending: True while a form waits for user input
     """
     stage_name = "meeting_summarized"
     required_stage = EntityResolver.stage_name
@@ -62,6 +59,9 @@ class MeetingSummaryGenerator(NoteProcessor):
     SUMMARY_START = "<!-- summary:meeting_summary:start -->"
     SUMMARY_END = "<!-- summary:meeting_summary:end -->"
     
+    # Placed in the fallback form when the AI could not produce a summary
+    GENERATION_FAILED_TEXT = "Error generating summary. Please write manually."
+
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_meeting_summary' tag
     START_DATE = "2025-12-19"
@@ -484,15 +484,25 @@ class MeetingSummaryGenerator(NoteProcessor):
         
         if frontmatter.get('meeting_summary_pending'):
             await self._substage3_process_results(filename, frontmatter, content)
-        else:
-            summary = await self._substage1_generate_summary(filename, frontmatter, content)
-            await self._substage2_create_form(filename, frontmatter, content, summary)
-            raise ResultsNotReadyError(f"Form created, waiting for user input: {filename}")
+            return
+
+        summary = await self._substage1_generate_summary(filename, frontmatter, content)
+        if summary is None:
+            # Nothing usable to approve: hand the summary over to the user.
+            await self._substage2_create_form(
+                filename, frontmatter, content, self.GENERATION_FAILED_TEXT
+            )
+            raise ResultsNotReadyError(f"Summary generation failed, waiting for user: {filename}")
+
+        await self._finalize(filename, frontmatter, content, summary)
     
     async def _substage1_generate_summary(
         self, filename: str, frontmatter: Dict, content: str
-    ) -> str:
-        """Substage 1: Generate meeting summary using AI."""
+    ) -> Optional[str]:
+        """Substage 1: Generate meeting summary using AI.
+
+        Returns None when the AI produced nothing usable.
+        """
         logger.info("Generating meeting summary for: %s", filename)
         
         meeting_date = frontmatter.get('date', '')
@@ -520,9 +530,13 @@ class MeetingSummaryGenerator(NoteProcessor):
         
         if response.error:
             logger.error("AI error in summary generation: %s", response.error)
-            return "Error generating summary. Please write manually."
+            return None
         
-        return response.content.strip() if response.content else ""
+        summary = response.content.strip() if response.content else ""
+        if not summary:
+            logger.error("Empty AI response in summary generation for: %s", filename)
+            return None
+        return summary
     
     async def _substage2_create_form(
         self, filename: str, frontmatter: Dict, content: str, summary: str
@@ -561,7 +575,15 @@ class MeetingSummaryGenerator(NoteProcessor):
         if not form_data['finished']:
             raise ResultsNotReadyError(f"User has not checked 'Finished' in: {filename}")
         
-        summary = form_data['summary']
+        del frontmatter['meeting_summary_pending']
+        await self._finalize(
+            filename, frontmatter, self._remove_form_section(content), form_data['summary']
+        )
+
+    async def _finalize(
+        self, filename: str, frontmatter: Dict, content: str, summary: str
+    ) -> None:
+        """Write the summary callout and add the summary to the monthly index."""
         meeting_date = str(frontmatter.get('date', ''))
         meeting_title = frontmatter.get('title', filename.replace('.md', ''))
         source_link = f"[[{filename.replace('.md', '')}]]"
@@ -594,13 +616,9 @@ class MeetingSummaryGenerator(NoteProcessor):
             attendees=attendees, entities=entities
         )
         
-        # Remove form and add summary callout
-        content_without_form = self._remove_form_section(content)
-        transcript = read_text_from_content(content_without_form)
+        # Add summary callout (replacing any earlier one)
+        transcript = read_text_from_content(self._remove_form_section(content))
         summary_callout = self._generate_summary_callout(summary, meeting_date)
-        
-        # Update frontmatter
-        del frontmatter['meeting_summary_pending']
         
         # Save file
         full_content = frontmatter_to_text(frontmatter) + summary_callout + transcript

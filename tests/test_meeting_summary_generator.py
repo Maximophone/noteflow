@@ -334,3 +334,53 @@ class TestMonthlyIndexUpdate:
             
             # Check entities (should be unique, sorted, and exclude Alice who is an attendee)
             assert kwargs['entities'] == ['[[Charlie]]', '[[Dave]]']
+
+
+class TestAutomaticApproval:
+    """Summaries are finalised without a review form unless generation fails."""
+
+    TRANSCRIPT = """---
+category: meeting
+date: '2025-12-27'
+title: Standup
+processing_stages:
+- entities_resolved
+---
+Speaker A: Hello.
+"""
+
+    def _run(self, mock_generator, tmp_path, ai_response):
+        path = mock_generator.input_dir / "standup.md"
+        path.write_text(self.TRANSCRIPT)
+        mock_generator.tiny_ai_model = Mock()
+        mock_generator.tiny_ai_model.message.return_value = ai_response
+        return path
+
+    async def test_summary_is_finalised_without_form(self, mock_generator, tmp_path):
+        path = self._run(mock_generator, tmp_path, Mock(error=None, content="## Summary\nWe met."))
+
+        with patch("processors.notes.meeting_summary_generator.PATHS") as mock_paths:
+            mock_paths.meetings = tmp_path / "meetings"
+            await mock_generator.process_file("standup.md")
+
+        content = path.read_text()
+        assert MeetingSummaryGenerator.SUMMARY_START in content
+        assert MeetingSummaryGenerator.FORM_START not in content
+        assert "meeting_summary_pending" not in content
+        assert "We met." in content
+        index = (tmp_path / "meetings" / "2025-12 Meetings.md").read_text()
+        assert "We met." in index and "[[standup]]" in index
+
+    async def test_failed_generation_falls_back_to_form(self, mock_generator, tmp_path):
+        from processors.notes.meeting_summary_generator import ResultsNotReadyError
+        path = self._run(mock_generator, tmp_path, Mock(error="boom", content=None))
+
+        with patch("processors.notes.meeting_summary_generator.PATHS") as mock_paths:
+            mock_paths.meetings = tmp_path / "meetings"
+            with pytest.raises(ResultsNotReadyError):
+                await mock_generator.process_file("standup.md")
+
+        content = path.read_text()
+        assert MeetingSummaryGenerator.FORM_START in content
+        assert "meeting_summary_pending: true" in content
+        assert not (tmp_path / "meetings" / "2025-12 Meetings.md").exists()
