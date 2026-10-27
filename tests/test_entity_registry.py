@@ -134,3 +134,18 @@ class TestCuratedDescriptions:
         path = tmp_path / "Entity Descriptions.md"
         path.write_text("| Entity | Description |\n|---|---|\n| [[People/Nora Castell]] | Treasurer |\n| [[Empty]] |  |\n")
         assert load_descriptions(path) == {"nora castell": "Treasurer"}
+
+
+class TestAttendeeCandidates:
+    def _registry(self, tmp_path):
+        return make_registry(tmp_path, [
+            ("a.md", "2026-01-01", [ent("Google", "[[Google]]", "org")], ["[[Nora Cooke]]", "[[Mira Solberg]]"]),
+        ])
+
+    def test_unrelated_word_does_not_match_part_of_an_attendee_name(self, tmp_path):
+        ev = self._registry(tmp_path).evidence("Google", ["[[Nora Cooke]]"])
+        assert "[[Nora Cooke]]" not in [c.link for c in ev.candidates]
+
+    def test_misheard_attendee_still_matches(self, tmp_path):
+        ev = self._registry(tmp_path).evidence("Myra", ["[[Mira Solberg]]"])
+        assert "[[Mira Solberg]]" in [c.link for c in ev.candidates]

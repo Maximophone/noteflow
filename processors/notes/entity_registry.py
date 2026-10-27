@@ -99,6 +99,8 @@ class EntityRegistry:
     MAX_COMPANIONS = 40
     # Similarity below which an alias is not considered a fuzzy match
     MIN_SIMILARITY = 0.72
+    # Looser bar for the meeting's own attendees, who are likely referents
+    MIN_ATTENDEE_SIMILARITY = 0.7
     MAX_CANDIDATES = 8
 
     def __init__(self, path: Path, user_link: str = ""):
@@ -255,11 +257,13 @@ class EntityRegistry:
             for key in keys:
                 scores[key] = max(scores.get(key, 0.0), sim)
         # Attendees are likely referents even when misheard, but only if the
-        # spelling is at least loosely similar
+        # spelling is close: misheard names score about 0.75 and up ("Ezra"
+        # for Esra), while unrelated words can reach 0.55 against one part of
+        # a name ("Google" against Cooke)
         for key in attendee_keys:
             if key in self.entities and key not in scores:
                 sim = max([self._similarity(alias, key)] + [self._similarity(alias, t) for t in key.split()])
-                if sim >= 0.5:
+                if sim >= self.MIN_ATTENDEE_SIMILARITY:
                     scores[key] = sim
 
         ranked = sorted(
