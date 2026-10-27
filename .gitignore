@@ -95,3 +95,7 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Entity resolution eval output holds meeting content
+entity_eval_cache*.jsonl
+entity_registry.json

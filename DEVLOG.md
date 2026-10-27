@@ -4,6 +4,64 @@ A running log of technical discoveries, design decisions, and implementation not
 
 ---
 
+## 2026-10-27: Entity Resolution Gets Calibrated Confidence
+
+### Problem
+Every meeting's entity form listed every detected name (about 25), so validating them
+took a long time and mistakes still slipped through. The suggestions came from one AI call
+reading `Entity Reference.md`, which keeps only the *first* link ever chosen for each
+spelling. Once a spelling was mapped wrongly, the mistake was offered again in every later
+meeting.
+
+### What changed
+- **Entity registry** (`entity_registry.py`, stored as `KnowledgeBot/entity_registry.json`
+  in the vault): for every entity, how often each spelling resolved to it, which spellings
+  were left unlinked, who it appears with, how many meetings it appeared in, and a
+  one-line description. It is built from past `resolved_entities` on first use and updated
+  after every resolution.
+- **Two AI calls.** Detection only lists mentions. A resolution call then gets each mention
+  with its candidates and their profiles, and picks an existing note, a new one or none,
+  with a stated probability.
+- **Calibrated confidence** (`entity_confidence.py`): the AI's stated probability is not
+  calibrated on its own (stated 0.55 was right 37% of the time, stated 0.95 right 99.6%).
+  A logistic model combines it with the registry evidence. Answers at or above
+  `AUTO_ACCEPT_THRESHOLD` (0.95) are applied without asking. The form lists the rest,
+  least certain first, with a context snippet and alternatives.
+- `resolved_entities` now keeps `suggested_link` and `confidence`, so calibration can be
+  checked against what the user actually changed.
+
+### Measuring it without a log of past suggestions
+Past AI suggestions were overwritten by the user's answers, but the answers and the raw
+AssemblyAI text both survive. `scripts/entity_resolution_eval.py` replays meetings in date
+order, with the registry knowing only earlier meetings, and compares against the user's
+answers. On 100 meetings (2,495 mentions, about $4): the auto-accept tier covered 68% of
+entities with 0.8% disagreeing, and the median form shrank from 25 entries to 6. The
+history itself contains mistakes, so "disagreeing" overstates real errors. The script
+also writes `Entity Resolution Audit.md` to the vault, listing past answers the AI
+confidently disputes. Its cache and audit hold meeting content and stay in the vault.
+
+### Entity descriptions
+For candidates with similar names (two people called Ben, a national chapter and the
+global organisation), the resolver also gets a one-line description from
+`KnowledgeBot/Entity Descriptions.md`, a table the user can edit.
+`scripts/prefill_entity_descriptions.py` prefilled it from the vault notes of the 173
+entities most involved in ambiguities. A replay of 50 recent meetings, with descriptions
+built only from log entries before them, barely moved the numbers (ambiguous first names
+80% to 81% agreement). Reading the disagreements explained it: the AI now picked the
+person the context points to, and the *history* was wrong. Those wrong resolutions had
+also been written into the wrong person's People note by the interaction logger, and from
+there into that person's prefilled description. One such row was corrected by hand. A
+mis-resolution therefore spreads beyond the transcript, which makes clearing the audit
+list more valuable than it looks.
+
+### Not reaching zero mistakes
+Speech recognition garbles names, and some names are ambiguous ("Ben" maps to six people
+in the history). New names spelled from outside knowledge cannot be guessed from the
+transcript. The achievable goal is triage: auto-accept what is near-certain and put the
+user's attention on the rest.
+
+---
+
 ## 2026-08-27: launchd Was Throttling The Microphone Capture
 
 ### Problem

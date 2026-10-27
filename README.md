@@ -14,7 +14,7 @@ A document processing pipeline for audio transcription and note management.
 ### Note Processing Pipeline
 - **Transcript Classification** - Automatically categorizes transcripts (meeting, diary, idea, meditation, todo)
 - **Speaker Identification** - AI-assisted speaker identification with inline Obsidian validation forms
-- **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks
+- **Entity Resolution** - AI detection and resolution of named entities (people, orgs) to Obsidian wikilinks, with calibrated confidence so only uncertain ones need review
 - **Interaction Logging** - Generates meeting notes for participants and brief context logs for mentioned people
 - **Todoist Sync** - Turns meeting action items, dictated todo memos and commitments buried in idea notes into Todoist tasks, with AI-chosen project, section, due date, urgency and labels
 
@@ -129,8 +129,8 @@ for concrete professional work that clearly belongs to one.
 Adding a further source (email, say) means a new subclass with its own prompt, plus a
 `from-email` constant added to `TODOIST_PROVENANCE_LABELS` in `config/user_config.py`.
 
-For meetings, the action items come from the *validated* summary, so the human review gate
-in the Obsidian summary form is the only approval step — the sync itself is automatic.
+For meetings, the action items come from the meeting summary, which is approved
+automatically, so nothing in this path waits for the user.
 
 - One AI call per note decides wording, due date, urgency, project, section
   and labels, using the live Todoist project/section/label lists and open tasks as context.
@@ -390,9 +390,9 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 2. **Audio → Transcript**: AudioTranscriber creates markdown transcripts
 3. **Classification**: TranscriptClassifier categorizes the transcript
 4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
-5. **Entity Resolution**: EntityResolver detects/resolves entities (AI detection + inline Obsidian form for human validation)
+5. **Entity Resolution**: EntityResolver detects/resolves entities. Each answer gets a calibrated confidence; confident ones are applied automatically and an inline Obsidian form asks only about the uncertain ones (see `scripts/entity_resolution_eval.py` to measure and recalibrate). Candidates with similar names are told apart using `KnowledgeBot/Entity Descriptions.md` in the vault, an editable table prefilled by `scripts/prefill_entity_descriptions.py`
 6. **Processing**: Category-specific processors handle the rest
-7. **Task Sync**: For meetings, MeetingSummaryGenerator produces a summary the user validates, then TodoistSyncProcessor pushes his action items to Todoist. For `todo` memos, TodoProcessor pushes them directly (see [Todoist Sync](#todoist-sync))
+7. **Task Sync**: For meetings, MeetingSummaryGenerator produces a summary (approved automatically), then TodoistSyncProcessor pushes the user's action items to Todoist. For `todo` memos, TodoProcessor pushes them directly (see [Todoist Sync](#todoist-sync))
 
 ### Email Processing Pipeline
 
