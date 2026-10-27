@@ -23,6 +23,8 @@ def mock_resolver(mock_ai, tmp_path):
         mock_paths.transcriptions = input_dir
         resolver = EntityResolver(input_dir)
         resolver.registry_path = tmp_path / "entity_registry.json"
+        resolver.tracked_orgs_path = tmp_path / "Tracked Organisations.md"
+        resolver.tracked_orgs_path.write_text("- [[Pause IA]]\n")
         yield resolver
 
 class TestEntityReferenceParsing:
@@ -394,3 +396,20 @@ class TestReviewHelpers:
             registry, "Nora Castell: hello.", ["[[Nora Castell]]"], [{"detected_name": "Nora Castell"}]
         )
         assert results[0]["confidence"] >= mock_resolver.AUTO_ACCEPT_THRESHOLD
+
+
+class TestUntrackedOrganisations:
+    async def test_untracked_org_answers_are_dropped(self, mock_resolver):
+        registry = mock_resolver._load_registry()
+        mock_resolver.ai_model = MagicMock()
+        mock_resolver.ai_model.message.return_value = MagicMock(error=None, content=(
+            '{"resolutions": ['
+            '{"id": 0, "choice": "NEW", "new_link": "[[Daily Bugle]]", "entity_type": "org", "probability": 0.9},'
+            '{"id": 1, "choice": "NEW", "new_link": "[[Pause IA]]", "entity_type": "org", "probability": 0.9},'
+            '{"id": 2, "choice": "NEW", "new_link": "[[Nora Castell]]", "entity_type": "people", "probability": 0.9}]}'
+        ))
+        results = await mock_resolver._resolve_mentions(
+            registry, "text", [],
+            [{"detected_name": "Bugle"}, {"detected_name": "Posia"}, {"detected_name": "Nora"}],
+        )
+        assert [r["resolved_link"] for r in results] == ["[[Pause IA]]", "[[Nora Castell]]"]

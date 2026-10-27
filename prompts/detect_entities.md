@@ -6,7 +6,7 @@ You will be provided with:
 
 Your goal is to detect:
 - **People**: Names of specific individuals (new or existing).
-- **Organisations**: ONLY organisations that already appear in the "Known Entities" list below (or are spellings of one). Do NOT detect any organisation that is not already in that list, even if it would otherwise be a plausible entity.
+- **Organisations**: ONLY organisations in the "Organisations" section of the "Known Entities" list below (or spellings of one). That list is deliberately short. Do NOT detect any other organisation, however well known (media, platforms, companies, institutions), even if it was discussed at length.
 
 Do NOT detect any other type of entity (concepts, projects, locations, etc.).
 
