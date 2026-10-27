@@ -360,3 +360,37 @@ class TestResolveMentions:
         results = await mock_resolver._resolve_mentions(registry, "Nora said hi.", [], [{"detected_name": "Nora"}])
         assert results[0]["resolved_link"] == "[[Nora Castell]]"
         assert mock_resolver.ai_model.message.call_count == 2
+
+
+class TestReviewHelpers:
+    def test_snippet_skips_earlier_callouts(self, mock_resolver):
+        transcript = (
+            "<!-- summary:speaker_identification:start -->\n**Speakers:** [[Nora Castell]]\n"
+            "<!-- summary:speaker_identification:end -->\nNora Castell: I met Tom at the event."
+        )
+        assert "Speakers" not in mock_resolver._context_snippet(transcript, "Nora Castell")
+        assert "I met Tom" in mock_resolver._context_snippet(transcript, "Nora Castell")
+
+    def test_percent_rounds_down(self, mock_resolver):
+        assert mock_resolver._percent(0.949) == 94
+        assert mock_resolver._percent(1.0) == 100
+
+    def test_attendee_names(self, mock_resolver):
+        attendees = ["[[Nora Castell]]", "[[Maxime Fournes]]"]
+        assert mock_resolver._names_attendee("Nora", "[[Nora Castell]]", attendees)
+        assert mock_resolver._names_attendee("Nora Castel", "[[People/Nora Castell]]", attendees)
+        assert not mock_resolver._names_attendee("Nora", "[[Nora Smith]]", attendees)
+        assert not mock_resolver._names_attendee("Blorf", "[[Nora Castell]]", attendees)
+
+    async def test_attendee_answer_is_near_certain(self, mock_resolver):
+        from processors.notes.entity_registry import EntityRegistry
+        registry = EntityRegistry(mock_resolver.registry_path, "[[Maxime Fournes]]")
+        mock_resolver.ai_model = MagicMock()
+        mock_resolver.ai_model.message.return_value = MagicMock(error=None, content=(
+            '{"resolutions": [{"id": 0, "choice": "NEW", "new_link": "[[Nora Castell]]", '
+            '"entity_type": "people", "probability": 0.8}]}'
+        ))
+        results = await mock_resolver._resolve_mentions(
+            registry, "Nora Castell: hello.", ["[[Nora Castell]]"], [{"detected_name": "Nora Castell"}]
+        )
+        assert results[0]["confidence"] >= mock_resolver.AUTO_ACCEPT_THRESHOLD

@@ -8,6 +8,7 @@ using AI detection and user validation via inline Obsidian forms.
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import aiofiles
+import difflib
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from .speaker_identifier import SpeakerIdentifier
 from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ..common.obsidian_form import validate_wikilink_field, validate_choice_field, insert_error_in_section
 from . import entity_confidence
-from .entity_registry import AliasEvidence, EntityRegistry, entity_key, load_descriptions
+from .entity_registry import AliasEvidence, EntityRegistry, entity_key, load_descriptions, normalize_alias
 from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
@@ -296,7 +297,15 @@ class EntityResolver(NoteProcessor):
 
     @staticmethod
     def _context_snippet(transcript: str, name: str, width: int = 90) -> str:
-        """The text around the first mention of `name`, on one line."""
+        """The text around the first mention of `name` in the conversation, on one line.
+
+        Callouts left by earlier stages (speaker list, summaries) are skipped:
+        they name people too, but say nothing about who is meant.
+        """
+        transcript = re.sub(
+            r"<!--\s*(summary|form):([\w-]+):start\s*-->.*?<!--\s*\1:\2:end\s*-->",
+            "", transcript, flags=re.S,
+        )
         match = re.search(r"\b" + re.escape(name) + r"\b", transcript)
         if not match:
             return ""
@@ -304,6 +313,11 @@ class EntityResolver(NoteProcessor):
         end = min(len(transcript), match.end() + width)
         snippet = " ".join(transcript[start:end].split())
         return f"…{snippet}…"
+
+    @staticmethod
+    def _percent(confidence: float) -> int:
+        # Rounded down, so nothing below the auto-accept threshold reads as above it
+        return int(confidence * 100)
 
     def _generate_form(self, entities: List[Dict[str, Any]], transcript: str = "") -> str:
         """Generate the entity resolution form.
@@ -338,7 +352,7 @@ class EntityResolver(NoteProcessor):
             confidence = entity.get('confidence')
             heading = f"## {detected}"
             if confidence is not None:
-                heading += f" — {round(confidence * 100)}% sure"
+                heading += f" — {self._percent(confidence)}% sure"
             lines.append(heading)
             snippet = self._context_snippet(transcript, detected) if transcript else ""
             if snippet:
@@ -357,7 +371,7 @@ class EntityResolver(NoteProcessor):
             lines.extend(["## Auto-accepted — edit only if wrong", ""])
             for i, entity in accepted:
                 confidence = entity.get('confidence')
-                pct = f" ({round(confidence * 100)}%)" if confidence is not None else ""
+                pct = f" ({self._percent(confidence)}%)" if confidence is not None else ""
                 lines.append(
                     f"- {entity['detected_name']}{pct}: "
                     f"<!-- input:entity_{i}_link -->{entity.get('suggested_link', '')}"
@@ -498,6 +512,12 @@ class EntityResolver(NoteProcessor):
     # ===== Resolution =====
 
     MAX_PROMPT_CANDIDATES = 5
+    # Attendees come from the speaker identification the user has already
+    # confirmed, so a close spelling of one of them is all but certain. The
+    # model cannot see that for someone at their first meeting, whom it
+    # treats as an unknown new name.
+    ATTENDEE_CONFIDENCE = 0.99
+    ATTENDEE_MIN_SIMILARITY = 0.8
     RESOLUTION_ATTEMPTS = 2
 
     def _format_mentions(
@@ -601,17 +621,33 @@ class EntityResolver(NoteProcessor):
                 entity_type = ""
 
             feats = entity_confidence.features(link, ev, llm_probability)
+            confidence = entity_confidence.probability(feats)
+            if self._names_attendee(mention['detected_name'], link, attendees):
+                confidence = max(confidence, self.ATTENDEE_CONFIDENCE)
             results.append({
                 'detected_name': mention['detected_name'],
                 'resolved_link': link,
                 'entity_type': entity_type,
-                'confidence': round(entity_confidence.probability(feats), 3),
+                'confidence': round(confidence, 3),
                 'llm_probability': llm_probability,
                 'alternatives': [c.link for c in ev.candidates if entity_key(c.link) != entity_key(link)][:3],
                 'description': str(answer.get("description") or "").strip(),
                 'features': feats,
             })
         return results
+
+    @classmethod
+    def _names_attendee(cls, detected_name: str, link: str, attendees: List[str]) -> bool:
+        """True if `link` is an attendee and `detected_name` is close to their name."""
+        key = entity_key(link)
+        if not key or key not in {entity_key(a) for a in attendees}:
+            return False
+        name = normalize_alias(detected_name)
+        if not name:
+            return False
+        if set(name.split()) <= set(key.split()):
+            return True
+        return difflib.SequenceMatcher(None, name, key).ratio() >= cls.ATTENDEE_MIN_SIMILARITY
 
     @staticmethod
     def _as_wikilink(text: str) -> str:
