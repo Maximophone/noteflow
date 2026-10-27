@@ -4,7 +4,7 @@ Tests for EntityResolver functionality.
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from processors.notes.entity_resolver import EntityResolver
 
@@ -20,7 +20,9 @@ def mock_resolver(mock_ai, tmp_path):
     with patch("processors.notes.entity_resolver.PATHS") as mock_paths:
         mock_paths.vault_path = tmp_path / "vault"
         mock_paths.vault_path.mkdir(parents=True)
+        mock_paths.transcriptions = input_dir
         resolver = EntityResolver(input_dir)
+        resolver.registry_path = tmp_path / "entity_registry.json"
         yield resolver
 
 class TestEntityReferenceParsing:
@@ -247,3 +249,114 @@ The transcript content here.
         assert "resolved_entities" not in result
         assert "entities_resolved" not in result
 
+
+
+class TestConfidenceTriage:
+    """Confident answers are applied without asking; only uncertain ones reach the form."""
+
+    TRANSCRIPT = """---
+category: meeting
+date: '2026-10-26'
+title: Sync
+final_speaker_mapping:
+  Speaker A:
+    name: Maxime Fournes
+    person_id: '[[Maxime Fournes]]'
+processing_stages:
+- speakers_identified
+---
+Maxime Fournes: I spoke with Nora and Tom about Posia.
+"""
+
+    def _setup(self, mock_resolver, answers):
+        (mock_resolver.input_dir / "sync.md").write_text(self.TRANSCRIPT)
+        mock_resolver._substage1_detect_entities = AsyncMock(return_value=[
+            {"detected_name": a["detected_name"], "entity_type": a["entity_type"]} for a in answers
+        ])
+        mock_resolver._resolve_mentions = AsyncMock(return_value=[dict(a) for a in answers])
+        mock_resolver._update_entity_reference = MagicMock()
+
+    @staticmethod
+    def answer(name, link, confidence, entity_type="people"):
+        return {"detected_name": name, "resolved_link": link, "entity_type": entity_type,
+                "confidence": confidence, "llm_probability": confidence,
+                "alternatives": ["[[Tom Varga]]"], "description": ""}
+
+    async def test_all_confident_completes_without_form(self, mock_resolver):
+        self._setup(mock_resolver, [
+            self.answer("Nora", "[[Nora Castell]]", 0.99),
+            self.answer("Posia", "[[Pause IA]]", 0.98, "org"),
+        ])
+
+        await mock_resolver.process_file("sync.md")
+
+        content = (mock_resolver.input_dir / "sync.md").read_text()
+        assert mock_resolver.FORM_START not in content
+        assert "all auto-accepted" in content
+        assert "with [[Nora Castell]] and Tom about [[Pause IA]]" in content
+        assert "suggested_link: '[[Nora Castell]]'" in content
+        assert "confidence: 0.99" in content
+        # The registry learnt from it
+        registry = mock_resolver._load_registry()
+        assert registry.evidence("Nora").candidates[0].alias_count == 1
+
+    async def test_uncertain_entities_open_form_least_certain_first(self, mock_resolver):
+        from processors.notes.entity_resolver import ResultsNotReadyError
+        self._setup(mock_resolver, [
+            self.answer("Nora", "[[Nora Castell]]", 0.99),
+            self.answer("Tom", "[[Tom Okafor]]", 0.55),
+            self.answer("Posia", "[[Pause IA]]", 0.80, "org"),
+        ])
+
+        with pytest.raises(ResultsNotReadyError):
+            await mock_resolver.process_file("sync.md")
+
+        content = (mock_resolver.input_dir / "sync.md").read_text()
+        assert "2 to review, 1 auto-accepted" in content
+        assert content.index("## Tom — 55% sure") < content.index("## Posia — 80% sure")
+        assert "I spoke with Nora and Tom" in content  # context snippet
+        assert "Alternatives: [[Tom Varga]]" in content
+        assert "- Nora (99%): <!-- input:entity_2_link -->[[Nora Castell]]" in content
+        assert "<!-- input:entity_2_type -->" not in content
+
+    async def test_form_submission_keeps_auto_accepted_type_and_corrections(self, mock_resolver):
+        from processors.notes.entity_resolver import ResultsNotReadyError
+        self._setup(mock_resolver, [
+            self.answer("Nora", "[[Nora Castell]]", 0.99),
+            self.answer("Tom", "[[Tom Okafor]]", 0.55),
+        ])
+        with pytest.raises(ResultsNotReadyError):
+            await mock_resolver.process_file("sync.md")
+
+        path = mock_resolver.input_dir / "sync.md"
+        content = path.read_text()
+        content = content.replace("<!-- input:entity_0_link -->[[Tom Okafor]]", "<!-- input:entity_0_link -->[[Tom Varga]]")
+        content = content.replace("- [ ] Finished", "- [x] Finished")
+        path.write_text(content)
+
+        await mock_resolver.process_file("sync.md")
+
+        content = path.read_text()
+        assert "1 reviewed" in content
+        assert "Nora Castell]] and [[Tom Varga]]" in content
+        from processors.common.frontmatter import parse_frontmatter_from_content
+        resolved = {e["detected_name"]: e for e in parse_frontmatter_from_content(content)["resolved_entities"]}
+        assert resolved["Nora"]["entity_type"] == "people"
+        assert resolved["Tom"]["suggested_link"] == "[[Tom Okafor]]"
+        assert resolved["Tom"]["resolved_link"] == "[[Tom Varga]]"
+        assert "entity_resolution_pending" not in content
+
+
+class TestResolveMentions:
+    async def test_malformed_json_is_retried(self, mock_resolver):
+        from processors.notes.entity_registry import EntityRegistry
+        registry = EntityRegistry(mock_resolver.registry_path, "[[Maxime Fournes]]")
+        good = '{"resolutions": [{"id": 0, "choice": "NEW", "new_link": "[[Nora Castell]]", "entity_type": "people", "probability": 0.9}]}'
+        mock_resolver.ai_model = MagicMock()
+        mock_resolver.ai_model.message.side_effect = [
+            MagicMock(error=None, content='{"resolutions": [{"id": 0,'),
+            MagicMock(error=None, content=good),
+        ]
+        results = await mock_resolver._resolve_mentions(registry, "Nora said hi.", [], [{"detected_name": "Nora"}])
+        assert results[0]["resolved_link"] == "[[Nora Castell]]"
+        assert mock_resolver.ai_model.message.call_count == 2

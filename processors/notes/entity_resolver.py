@@ -8,6 +8,7 @@ using AI detection and user validation via inline Obsidian forms.
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import aiofiles
+import json
 import os
 import re
 import asyncio
@@ -16,10 +17,13 @@ from .base import NoteProcessor
 from .speaker_identifier import SpeakerIdentifier
 from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ..common.obsidian_form import validate_wikilink_field, validate_choice_field, insert_error_in_section
+from . import entity_confidence
+from .entity_registry import AliasEvidence, EntityRegistry, entity_key, load_descriptions
 from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
 from config.paths import PATHS
+from config.user_config import USER_NAME
 from prompts.prompts import get_prompt
 
 logger = setup_logger(__name__)
@@ -36,34 +40,43 @@ class ResultsNotReadyError(Exception):
 
 
 class EntityResolver(NoteProcessor):
-    """Resolves named entities in transcripts to wikilinks via AI + user validation.
+    """Resolves named entities in transcripts to wikilinks, asking the user only when unsure.
     
-    This processor implements a multi-substage workflow:
+    **Substage 1: Detection**
+        - AI lists the people and known organisations mentioned in the transcript
     
-    **Substage 1: AI Entity Detection**
-        - Reads transcript and Entity Reference file
-        - AI detects named entities (people, organisations)
-        - Looks up existing mappings in reference file
+    **Substage 2: Resolution**
+        - For each mention, the entity registry supplies candidates and the
+          evidence for them (past spellings, attendees, usual companions)
+        - AI picks a link for each mention (an existing note, a new one, or none)
+        - Each answer gets a calibrated probability of being right (entity_confidence)
     
-    **Substage 2: Form Generation**
-        - Creates inline form with one section per entity
-        - Prepopulates Link and Type fields with AI suggestions
-        - Sends Discord notification
+    **Substage 3: Review** (only when something is uncertain)
+        - Answers at or above AUTO_ACCEPT_THRESHOLD are applied without asking
+        - Otherwise a form lists the uncertain ones first, least certain on top,
+          with context and alternatives; the confident ones follow, editable
     
-    **Substage 3: Processing**
-        - Validates input (type must be: people, org)
+    **Substage 4: Finalisation**
         - Replaces entity occurrences in transcript
-        - Updates Entity Reference file with new mappings
+        - Teaches the registry (and the Entity Reference file) the outcome
     
     **Frontmatter Fields**:
         - entity_resolution_pending: True while waiting for user input
-        - resolved_entities: Dict of entity mappings after completion
+        - detected_entities: the AI's answers while the form is open
+        - resolved_entities: final mappings, with the AI's suggestion and confidence
+          kept alongside so calibration can be checked against what the user changed
     """
     stage_name = "entities_resolved"
     required_stage = SpeakerIdentifier.stage_name
     
     # Entity types
     ENTITY_TYPES = {"people", "org"}
+    
+    # Answers at least this likely to be right are applied without review.
+    # In the 2026-10-27 replay (scripts/entity_resolution_eval.py) this auto-accepted
+    # 70% of entities, of which 0.8% disagreed with the user's past answer. 0.97
+    # would auto-accept 64% with 0.5% disagreeing.
+    AUTO_ACCEPT_THRESHOLD = 0.95
     
     # Form markers
     FORM_START = "<!-- form:entity_resolution:start -->"
@@ -74,6 +87,9 @@ class EntityResolver(NoteProcessor):
     def __init__(self, input_dir: Path):
         super().__init__(input_dir)
         self.entity_reference_path = PATHS.vault_path / "Entity Reference.md"
+        self.registry_path = PATHS.vault_path / "KnowledgeBot" / "entity_registry.json"
+        # User-editable descriptions; see scripts/prefill_entity_descriptions.py
+        self.descriptions_path = PATHS.vault_path / "KnowledgeBot" / "Entity Descriptions.md"
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_entity_resolution' tag
@@ -228,36 +244,125 @@ class EntityResolver(NoteProcessor):
         self.entity_reference_path.write_text('\n'.join(lines), encoding='utf-8')
         logger.info("Updated Entity Reference file")
     
+    # ===== Entity Registry =====
+
+    def _load_registry(self) -> EntityRegistry:
+        """Load the registry, building it from past resolutions the first time.
+
+        Loaded fresh on every use: the transcript and email resolvers share it.
+        """
+        if self.registry_path.exists():
+            registry = EntityRegistry(self.registry_path, f"[[{USER_NAME}]]")
+        else:
+            registry = self._build_registry()
+            registry.save()
+        registry.curated = load_descriptions(self.descriptions_path)
+        return registry
+
+    def _build_registry(self) -> EntityRegistry:
+        """Build the registry from the resolved_entities of every past note."""
+        logger.info("Building entity registry from past resolutions")
+        meetings = []
+        for directory in {self.input_dir, PATHS.transcriptions}:
+            for path in sorted(Path(directory).glob("*.md")):
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except OSError as e:
+                    logger.warning("Skipping %s while building registry: %s", path.name, e)
+                    continue
+                if "resolved_entities:" not in content:
+                    continue
+                frontmatter = parse_frontmatter_from_content(content) or {}
+                if frontmatter.get("resolved_entities"):
+                    meetings.append((
+                        path.name,
+                        str(frontmatter.get("date", "")),
+                        frontmatter["resolved_entities"],
+                        self._attendees(frontmatter),
+                    ))
+        registry = EntityRegistry.rebuild(self.registry_path, f"[[{USER_NAME}]]", meetings)
+        logger.info("Built entity registry: %d entities from %d notes", len(registry.entities), len(meetings))
+        return registry
+
+    @staticmethod
+    def _attendees(frontmatter: Dict) -> List[str]:
+        mapping = frontmatter.get("final_speaker_mapping") or {}
+        return sorted({
+            v["person_id"] for v in mapping.values()
+            if isinstance(v, dict) and v.get("person_id")
+        })
+
     # ===== Form Generation =====
-    
-    def _generate_form(self, entities: List[Dict[str, str]]) -> str:
+
+    @staticmethod
+    def _context_snippet(transcript: str, name: str, width: int = 90) -> str:
+        """The text around the first mention of `name`, on one line."""
+        match = re.search(r"\b" + re.escape(name) + r"\b", transcript)
+        if not match:
+            return ""
+        start = max(0, match.start() - width)
+        end = min(len(transcript), match.end() + width)
+        snippet = " ".join(transcript[start:end].split())
+        return f"…{snippet}…"
+
+    def _generate_form(self, entities: List[Dict[str, Any]], transcript: str = "") -> str:
         """Generate the entity resolution form.
         
+        Entities needing review come first, each with its context and the
+        alternatives considered; auto-accepted ones follow with only a link field.
+        Field indices follow the order of `entities`, which is also the order
+        stored in the detected_entities frontmatter.
+
         Args:
-            entities: List of dicts with 'detected_name', 'suggested_link', 'entity_type'
+            entities: dicts with 'detected_name', 'suggested_link', 'entity_type',
+                and optionally 'confidence', 'alternatives', 'auto_accepted'
         """
+        review = [(i, e) for i, e in enumerate(entities) if not e.get('auto_accepted')]
+        accepted = [(i, e) for i, e in enumerate(entities) if e.get('auto_accepted')]
+
         lines = [
             self.FORM_START,
             "",
-            "> [!info] Entity Resolution — Review and confirm entity mappings",
+            f"> [!info] Entity Resolution — {len(review)} to review"
+            + (f", {len(accepted)} auto-accepted" if accepted else ""),
+            "> Fix the link if wrong, or clear it to leave the name unlinked.",
             "",
         ]
         
-        for i, entity in enumerate(entities):
+        for i, entity in review:
             detected = entity['detected_name']
             suggested = entity.get('suggested_link', '')
             # Blank rather than a placeholder: validation then tells the user the
             # field is required instead of rejecting an invented type.
             entity_type = entity.get('entity_type', '')
-            
+            confidence = entity.get('confidence')
+            heading = f"## {detected}"
+            if confidence is not None:
+                heading += f" — {round(confidence * 100)}% sure"
+            lines.append(heading)
+            snippet = self._context_snippet(transcript, detected) if transcript else ""
+            if snippet:
+                lines.append(f"> {snippet}")
+            if entity.get('alternatives'):
+                lines.append(f"Alternatives: {' · '.join(entity['alternatives'])}")
             lines.extend([
-                f"## {detected}",
                 f"**Link:** <!-- input:entity_{i}_link -->{suggested}",
                 f"**Type:** <!-- input:entity_{i}_type -->{entity_type}",
                 "",
                 "---",
                 "",
             ])
+
+        if accepted:
+            lines.extend(["## Auto-accepted — edit only if wrong", ""])
+            for i, entity in accepted:
+                confidence = entity.get('confidence')
+                pct = f" ({round(confidence * 100)}%)" if confidence is not None else ""
+                lines.append(
+                    f"- {entity['detected_name']}{pct}: "
+                    f"<!-- input:entity_{i}_link -->{entity.get('suggested_link', '')}"
+                )
+            lines.extend(["", "---", ""])
         
         lines.extend([
             "- [ ] Finished <!-- input:finished -->",
@@ -273,7 +378,8 @@ class EntityResolver(NoteProcessor):
         
         Returns:
             Dict with:
-                - 'entities': List of dicts with 'link', 'type'
+                - 'entities': List of dicts with 'link', 'type' (type is None
+                  for auto-accepted entries, which have no type field)
                 - 'finished': Boolean
             Returns None if form not found.
         """
@@ -310,7 +416,7 @@ class EntityResolver(NoteProcessor):
         for i in range(max_idx + 1):
             result['entities'].append({
                 'link': links.get(i, ''),
-                'type': types.get(i, ''),
+                'type': types.get(i),
             })
         
         # Parse finished checkbox
@@ -339,14 +445,24 @@ class EntityResolver(NoteProcessor):
         
         return content
     
-    def _generate_summary(self, entities: List[Dict[str, str]]) -> str:
-        """Generate completion summary."""
+    def _generate_summary(self, entities: List[Dict[str, str]], reviewed: Optional[int] = None) -> str:
+        """Generate completion summary.
+
+        Args:
+            reviewed: how many entities the user was asked to review, if known
+        """
         resolved_count = sum(1 for e in entities if e.get('resolved_link'))
+        if reviewed is None:
+            detail = ""
+        elif reviewed == 0:
+            detail = ", all auto-accepted"
+        else:
+            detail = f", {reviewed} reviewed"
         
         lines = [
             self.SUMMARY_START,
             "",
-            f"> [!success] Entity resolution complete ({resolved_count} entities resolved)",
+            f"> [!success] Entity resolution complete ({resolved_count} entities resolved{detail})",
             "",
         ]
         
@@ -364,7 +480,8 @@ class EntityResolver(NoteProcessor):
                 )
                 continue
 
-            by_type[entity_type].append(e['resolved_link'])
+            if e['resolved_link'] not in by_type[entity_type]:
+                by_type[entity_type].append(e['resolved_link'])
         
         for type_name, links in by_type.items():
             if links:
@@ -378,6 +495,133 @@ class EntityResolver(NoteProcessor):
         
         return '\n'.join(lines)
     
+    # ===== Resolution =====
+
+    MAX_PROMPT_CANDIDATES = 5
+    RESOLUTION_ATTEMPTS = 2
+
+    def _format_mentions(
+        self, registry: EntityRegistry, names: List[str], evidences: List[AliasEvidence]
+    ) -> str:
+        """Describe each mention and its candidates for the resolution prompt."""
+        blocks = []
+        for i, (name, ev) in enumerate(zip(names, evidences)):
+            past = [f"{c.link} x{c.alias_count}" for c in ev.candidates if c.alias_count]
+            if ev.rejected:
+                past.append(f"left unlinked x{ev.rejected}")
+            history = ", ".join(past) if past else "never seen"
+            lines = [f'[{i}] "{name}" (history: {history})']
+            candidates = ev.candidates[:self.MAX_PROMPT_CANDIDATES]
+            if candidates:
+                lines.append("    candidates:")
+                for c in candidates:
+                    tag = " [attendee]" if c.is_attendee else ""
+                    lines.append(f"    - {registry.profile(c.link)}{tag}")
+            else:
+                lines.append("    candidates: none")
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _parse_json(text: str) -> Dict:
+        text = (text or "").strip()
+        if "```" in text:
+            text = text.split("```json")[-1] if "```json" in text else text.split("```")[1]
+            text = text.split("```")[0]
+        start, end = text.find("{"), text.rfind("}")
+        return json.loads(text[start:end + 1])
+
+    async def _resolve_mentions(
+        self,
+        registry: EntityRegistry,
+        transcript: str,
+        attendees: List[str],
+        mentions: List[Dict[str, str]],
+    ) -> List[Dict[str, Any]]:
+        """Pick a link for each detected mention and score how likely it is right.
+
+        Args:
+            mentions: dicts with 'detected_name' and optionally 'entity_type'
+
+        Returns one dict per mention with 'detected_name', 'resolved_link'
+        ('' for no link), 'entity_type', 'confidence', 'llm_probability',
+        'alternatives' and 'description'.
+        """
+        names = [m['detected_name'] for m in mentions]
+        evidences = [registry.evidence(n, attendees) for n in names]
+
+        prompt = get_prompt("resolve_entities")
+        for placeholder, value in [
+            ("{user_name}", USER_NAME),
+            ("{attendees}", "\n".join(f"- {registry.profile(a)}" for a in attendees) or "Unknown"),
+            ("{mentions}", self._format_mentions(registry, names, evidences)),
+            ("{transcript}", transcript),
+        ]:
+            prompt = prompt.replace(placeholder, value)
+
+        message = Message(role="user", content=[MessageContent(type="text", text=prompt)])
+        # The answer is long JSON, which is occasionally malformed: ask once more
+        for attempt in range(self.RESOLUTION_ATTEMPTS):
+            response = await asyncio.to_thread(self.ai_model.message, message, max_tokens=16000)
+            if response.error and "MAX_TOKENS" not in str(response.error):
+                raise EntityResolutionError(f"AI error in entity resolution: {response.error}")
+            try:
+                answers = {
+                    int(item.get("id", -1)): item
+                    for item in self._parse_json(response.content).get("resolutions", [])
+                }
+                break
+            except (ValueError, TypeError, AttributeError) as e:
+                if attempt + 1 == self.RESOLUTION_ATTEMPTS:
+                    raise EntityResolutionError(f"Could not parse entity resolution response: {e}")
+                logger.warning("Unparseable entity resolution response, retrying: %s", e)
+
+        results = []
+        for i, (mention, ev) in enumerate(zip(mentions, evidences)):
+            answer = answers.get(i, {})
+            choice = str(answer.get("choice") or "").strip()
+            if choice.upper() == "NEW":
+                link = self._as_wikilink(answer.get("new_link", "")) or self._as_wikilink(mention['detected_name'])
+            elif choice.upper() == "NONE" or not choice:
+                link = ""
+            else:
+                link = self._as_wikilink(choice)
+            try:
+                llm_probability = float(answer.get("probability", 0.5))
+            except (TypeError, ValueError):
+                llm_probability = 0.5
+            if i not in answers:
+                # The AI skipped it: fall back to the history, with low confidence
+                top = ev.history_top()
+                link, llm_probability = (top.link if top else ""), 0.3
+
+            entity = registry.lookup(link) if link else None
+            entity_type = answer.get("entity_type") or (entity or {}).get("type") or mention.get("entity_type") or ""
+            if entity_type not in self.ENTITY_TYPES:
+                entity_type = ""
+
+            feats = entity_confidence.features(link, ev, llm_probability)
+            results.append({
+                'detected_name': mention['detected_name'],
+                'resolved_link': link,
+                'entity_type': entity_type,
+                'confidence': round(entity_confidence.probability(feats), 3),
+                'llm_probability': llm_probability,
+                'alternatives': [c.link for c in ev.candidates if entity_key(c.link) != entity_key(link)][:3],
+                'description': str(answer.get("description") or "").strip(),
+                'features': feats,
+            })
+        return results
+
+    @staticmethod
+    def _as_wikilink(text: str) -> str:
+        text = (text or "").strip()
+        if not text:
+            return ""
+        if text.startswith("[[") and text.endswith("]]"):
+            return text
+        return f"[[{text.strip('[]')}]]"
+
     # ===== Main Processing =====
     
     async def process_file(self, filename: str) -> None:
@@ -392,34 +636,51 @@ class EntityResolver(NoteProcessor):
         
         if frontmatter.get('entity_resolution_pending'):
             await self._substage3_process_results(filename, frontmatter, content)
-        else:
-            entities = await self._substage1_detect_entities(filename, frontmatter, transcript)
-            if entities:
-                await self._substage2_create_form(filename, frontmatter, transcript, entities)
-                raise ResultsNotReadyError(f"Form created, waiting for user input: {filename}")
-            else:
-                logger.info("No entities detected in: %s", filename)
+            return
+
+        registry = self._load_registry()
+        mentions = await self._substage1_detect_entities(filename, frontmatter, transcript, registry)
+        if not mentions:
+            logger.info("No entities detected in: %s", filename)
+            return
+
+        entities = await self._resolve_mentions(
+            registry, transcript, self._attendees(frontmatter), mentions
+        )
+        for entity in entities:
+            entity['suggested_link'] = entity['resolved_link']
+            # A missing type would fail validation, so it always needs review
+            entity['auto_accepted'] = (
+                entity['confidence'] >= self.AUTO_ACCEPT_THRESHOLD and bool(entity['entity_type'])
+            )
+        # Least certain first: that is where the user's attention is needed
+        entities.sort(key=lambda e: (e['auto_accepted'], e['confidence']))
+
+        to_review = sum(1 for e in entities if not e['auto_accepted'])
+        logger.info(
+            "Resolved %d entities in %s: %d auto-accepted, %d to review",
+            len(entities), filename, len(entities) - to_review, to_review
+        )
+
+        if to_review == 0:
+            await self._finalize(filename, frontmatter, transcript, entities, reviewed=0)
+            return
+
+        await self._substage2_create_form(filename, frontmatter, transcript, entities)
+        raise ResultsNotReadyError(f"Form created, waiting for user input: {filename}")
     
     async def _substage1_detect_entities(
-        self, filename: str, frontmatter: Dict, transcript: str
+        self, filename: str, frontmatter: Dict, transcript: str,
+        registry: Optional[EntityRegistry] = None,
     ) -> List[Dict[str, str]]:
-        """Substage 1: Use AI to detect named entities."""
+        """Substage 1: Use AI to detect named entities.
+
+        Returns dicts with 'detected_name' and 'entity_type'.
+        """
         logger.info("Detecting entities in: %s", filename)
         
-        # Load existing reference
-        reference = self._parse_entity_reference()
-        
-        # Format references for prompt
-        ref_sections = []
-        for type_key, type_name in [("people", "People"), ("org", "Organisations")]:
-            items = reference.get(type_key, {})
-            if items:
-                ref_sections.append(f"## {type_name}")
-                for name, link in sorted(items.items()):
-                    ref_sections.append(f"- {name} -> {link}")
-                ref_sections.append("")
-        
-        references_text = "\n".join(ref_sections) if ref_sections else "No existing references."
+        registry = registry or self._load_registry()
+        references_text = registry.reference_text() or "No existing references."
         
         # Prepare prompt
         prompt_template = get_prompt("detect_entities")
@@ -449,17 +710,8 @@ class EntityResolver(NoteProcessor):
                 logger.warning("Empty response from AI for entity detection")
                 return []
             
-            # Parse JSON
-            content = response.content.strip()
-            # Remove markdown code blocks if present
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0].strip()
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0].strip()
-            
-            import json
             try:
-                data = json.loads(content)
+                data = self._parse_json(response.content)
                 entities = data.get("entities", [])
                 
                 for item in entities:
@@ -480,12 +732,11 @@ class EntityResolver(NoteProcessor):
 
                     unique_entities[detected] = {
                         "detected_name": detected,
-                        "suggested_link": item.get("suggested_link", ""),
                         "entity_type": entity_type
                     }
                         
-            except json.JSONDecodeError as e:
-                logger.error("Failed to parse JSON response: %s. Content: %s", e, content)
+            except (ValueError, TypeError) as e:
+                logger.error("Failed to parse JSON response: %s. Content: %s", e, response.content)
                 raise EntityResolutionError(f"Failed to parse AI response as JSON: {e}")
                 
             return list(unique_entities.values())
@@ -494,6 +745,9 @@ class EntityResolver(NoteProcessor):
             logger.error("Error in entity detection AI call: %s", e)
             return []
     
+    # Kept per entity in frontmatter while the form is open
+    _PENDING_FIELDS = ('detected_name', 'entity_type', 'suggested_link', 'confidence', 'description')
+
     async def _substage2_create_form(
         self, filename: str, frontmatter: Dict, transcript: str, entities: List[Dict]
     ) -> None:
@@ -501,14 +755,14 @@ class EntityResolver(NoteProcessor):
         logger.info("Creating entity resolution form for: %s", filename)
         
         # Generate form
-        form_content = self._generate_form(entities)
+        form_content = self._generate_form(entities, transcript)
         
         # Update frontmatter
         frontmatter['entity_resolution_pending'] = True
         
-        # Store detected entities for later reference
+        # Store the AI's answers; form fields are matched to them by index
         frontmatter['detected_entities'] = [
-            {'detected_name': e['detected_name'], 'entity_type': e.get('entity_type', '')}
+            {k: e[k] for k in self._PENDING_FIELDS if k in e}
             for e in entities
         ]
         
@@ -534,9 +788,14 @@ class EntityResolver(NoteProcessor):
         if not form_data['finished']:
             raise ResultsNotReadyError(f"User has not checked 'Finished' in: {filename}")
         
-        # Validate type fields
+        detected_entities = frontmatter.get('detected_entities', [])
+
+        # Validate type fields. Auto-accepted entries have no type field: they keep
+        # the type that was detected.
         errors = []
         for i, entity in enumerate(form_data['entities']):
+            if entity['type'] is None:
+                entity['type'] = detected_entities[i].get('entity_type', '') if i < len(detected_entities) else ''
             error = validate_choice_field(
                 entity['type'], 
                 self.ENTITY_TYPES, 
@@ -563,20 +822,41 @@ class EntityResolver(NoteProcessor):
             raise ResultsNotReadyError(f"Validation errors in: {filename}")
         
         # Build resolved entities list
-        detected_entities = frontmatter.get('detected_entities', [])
         resolved_entities = []
-        
+        reviewed = 0
         for i, entity in enumerate(form_data['entities']):
             if i < len(detected_entities):
+                detected = detected_entities[i]
+                if 'confidence' in detected and detected['confidence'] < self.AUTO_ACCEPT_THRESHOLD:
+                    reviewed += 1
                 resolved_entities.append({
-                    'detected_name': detected_entities[i]['detected_name'],
+                    **{k: v for k, v in detected.items() if k in self._PENDING_FIELDS},
                     'resolved_link': entity['link'],
                     'entity_type': entity['type'],
                 })
         
-        # Get transcript and replace entities
         transcript = read_text_from_content(self._remove_form_section(content))
-        
+        del frontmatter['entity_resolution_pending']
+        frontmatter.pop('detected_entities', None)
+        await self._finalize(filename, frontmatter, transcript, resolved_entities, reviewed=reviewed)
+
+    async def _finalize(
+        self, filename: str, frontmatter: Dict, transcript: str,
+        entities: List[Dict[str, Any]], reviewed: Optional[int] = None,
+    ) -> None:
+        """Link the resolved entities in the transcript and learn from the outcome."""
+        resolved_entities = [
+            {
+                'detected_name': e['detected_name'],
+                'entity_type': e.get('entity_type', ''),
+                'resolved_link': e.get('resolved_link', ''),
+                # What the AI proposed and how sure it was, to check calibration later
+                **({'suggested_link': e['suggested_link']} if 'suggested_link' in e else {}),
+                **({'confidence': e['confidence']} if 'confidence' in e else {}),
+            }
+            for e in entities
+        ]
+
         # Prepare replacements mapping
         replacements = {}
         for entity in resolved_entities:
@@ -606,17 +886,24 @@ class EntityResolver(NoteProcessor):
 
             transcript = re.sub(pattern_string, replace_callback, transcript)
         
-        # Update Entity Reference file
+        # Teach the registry and update the Entity Reference file
+        registry = self._load_registry()
+        descriptions = {
+            e['resolved_link']: e['description']
+            for e in entities if e.get('resolved_link') and e.get('description')
+        }
+        if registry.record_meeting(
+            filename, str(frontmatter.get('date', '')), resolved_entities,
+            self._attendees(frontmatter), descriptions,
+        ):
+            registry.save()
         self._update_entity_reference(resolved_entities)
         
         # Update frontmatter
         frontmatter['resolved_entities'] = resolved_entities
-        del frontmatter['entity_resolution_pending']
-        if 'detected_entities' in frontmatter:
-            del frontmatter['detected_entities']
         
         # Generate summary
-        summary = self._generate_summary(resolved_entities)
+        summary = self._generate_summary(resolved_entities, reviewed=reviewed)
         
         # Save file
         full_content = frontmatter_to_text(frontmatter) + summary + transcript
