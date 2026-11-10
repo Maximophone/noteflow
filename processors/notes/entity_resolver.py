@@ -19,7 +19,9 @@ from .speaker_identifier import SpeakerIdentifier
 from ..common.frontmatter import parse_frontmatter_from_content, frontmatter_to_text, read_text_from_content
 from ..common.obsidian_form import validate_wikilink_field, validate_choice_field, insert_error_in_section
 from . import entity_confidence
-from .entity_registry import AliasEvidence, EntityRegistry, entity_key, load_descriptions, normalize_alias
+from .entity_registry import (
+    AliasEvidence, EntityRegistry, entity_key, load_descriptions, load_tracked_orgs, normalize_alias,
+)
 from ai_core import AI
 from ai_core.types import Message, MessageContent
 from config.logging_config import setup_logger
@@ -91,6 +93,8 @@ class EntityResolver(NoteProcessor):
         self.registry_path = PATHS.vault_path / "KnowledgeBot" / "entity_registry.json"
         # User-editable descriptions; see scripts/prefill_entity_descriptions.py
         self.descriptions_path = PATHS.vault_path / "KnowledgeBot" / "Entity Descriptions.md"
+        # The only organisations that get linked; see load_tracked_orgs
+        self.tracked_orgs_path = PATHS.vault_path / "KnowledgeBot" / "Tracked Organisations.md"
     
     # Start date for automatic processing (YYYY-MM-DD)
     # Files before this date will be skipped unless they have 'force_entity_resolution' tag
@@ -258,6 +262,7 @@ class EntityResolver(NoteProcessor):
             registry = self._build_registry()
             registry.save()
         registry.curated = load_descriptions(self.descriptions_path)
+        registry.tracked_orgs = load_tracked_orgs(self.tracked_orgs_path)
         return registry
 
     def _build_registry(self) -> EntityRegistry:
@@ -596,7 +601,7 @@ class EntityResolver(NoteProcessor):
                     raise EntityResolutionError(f"Could not parse entity resolution response: {e}")
                 logger.warning("Unparseable entity resolution response, retrying: %s", e)
 
-        results = []
+        results, dropped = [], []
         for i, (mention, ev) in enumerate(zip(mentions, evidences)):
             answer = answers.get(i, {})
             choice = str(answer.get("choice") or "").strip()
@@ -620,6 +625,11 @@ class EntityResolver(NoteProcessor):
             if entity_type not in self.ENTITY_TYPES:
                 entity_type = ""
 
+            if self._is_untracked_org(registry, link, entity_type):
+                # Not an organisation the user wants linked: drop it altogether
+                dropped.append(mention['detected_name'])
+                continue
+
             feats = entity_confidence.features(link, ev, llm_probability)
             confidence = entity_confidence.probability(feats)
             if self._names_attendee(mention['detected_name'], link, attendees):
@@ -634,7 +644,18 @@ class EntityResolver(NoteProcessor):
                 'description': str(answer.get("description") or "").strip(),
                 'features': feats,
             })
+        if dropped:
+            logger.info("Ignored %d untracked organisations: %s", len(dropped), ", ".join(dropped))
         return results
+
+    @staticmethod
+    def _is_untracked_org(registry: EntityRegistry, link: str, entity_type: str) -> bool:
+        if registry.tracked_orgs is None:
+            return False
+        key = entity_key(link)
+        entity = registry.entities.get(key) if key else None
+        is_org = entity_type == "org" or bool(entity and entity["type"] == "org")
+        return is_org and key not in registry.tracked_orgs
 
     @classmethod
     def _names_attendee(cls, detected_name: str, link: str, attendees: List[str]) -> bool:

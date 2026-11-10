@@ -149,3 +149,33 @@ class TestAttendeeCandidates:
     def test_misheard_attendee_still_matches(self, tmp_path):
         ev = self._registry(tmp_path).evidence("Myra", ["[[Mira Solberg]]"])
         assert "[[Mira Solberg]]" in [c.link for c in ev.candidates]
+
+
+class TestTrackedOrganisations:
+    def _registry(self, tmp_path):
+        registry = make_registry(tmp_path, [
+            ("a.md", "2026-01-01", [
+                ent("Lisbon Chapter", "[[Lisbon Chapter]]", "org"),
+                ent("Daily Bugle", "[[Daily Bugle]]", "org"),
+                ent("Tom", "[[Tom Okafor]]"),
+            ], []),
+        ])
+        path = tmp_path / "Tracked Organisations.md"
+        path.write_text("# Tracked\n\n## Family\n- [[Lisbon Chapter]]\n- [[Porto Chapter]]\n")
+        from processors.notes.entity_registry import load_tracked_orgs
+        registry.tracked_orgs = load_tracked_orgs(path)
+        return registry
+
+    def test_reference_lists_only_tracked_orgs(self, tmp_path):
+        text = self._registry(tmp_path).reference_text()
+        assert "[[Lisbon Chapter]]" in text and "[[Porto Chapter]]" in text
+        assert "[[Daily Bugle]]" not in text
+        assert "[[Tom Okafor]]" in text
+
+    def test_untracked_orgs_are_not_candidates(self, tmp_path):
+        links = [c.link for c in self._registry(tmp_path).evidence("Daily Bugle").candidates]
+        assert "[[Daily Bugle]]" not in links
+
+    def test_missing_list_means_no_orgs(self, tmp_path):
+        from processors.notes.entity_registry import load_tracked_orgs
+        assert load_tracked_orgs(tmp_path / "missing.md") == {}

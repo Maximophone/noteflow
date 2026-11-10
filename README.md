@@ -390,7 +390,7 @@ Obsidian/                    # OBSIDIAN_VAULT_PATH
 2. **Audio → Transcript**: AudioTranscriber creates markdown transcripts
 3. **Classification**: TranscriptClassifier categorizes the transcript
 4. **Speaker ID**: SpeakerIdentifier identifies speakers (AI detection + inline Obsidian form for human validation)
-5. **Entity Resolution**: EntityResolver detects/resolves entities. Each answer gets a calibrated confidence; confident ones are applied automatically and an inline Obsidian form asks only about the uncertain ones (see `scripts/entity_resolution_eval.py` to measure and recalibrate). Candidates with similar names are told apart using `KnowledgeBot/Entity Descriptions.md` in the vault, an editable table prefilled by `scripts/prefill_entity_descriptions.py`
+5. **Entity Resolution**: EntityResolver detects/resolves entities. Each answer gets a calibrated confidence; confident ones are applied automatically and an inline Obsidian form asks only about the uncertain ones (see `scripts/entity_resolution_eval.py` to measure and recalibrate). Candidates with similar names are told apart using `KnowledgeBot/Entity Descriptions.md` in the vault, an editable table prefilled by `scripts/prefill_entity_descriptions.py`. Only organisations listed in `KnowledgeBot/Tracked Organisations.md` are detected and linked
 6. **Processing**: Category-specific processors handle the rest
 7. **Task Sync**: For meetings, MeetingSummaryGenerator produces a summary (approved automatically), then TodoistSyncProcessor pushes the user's action items to Todoist. For `todo` memos, TodoProcessor pushes them directly (see [Todoist Sync](#todoist-sync))
 
